@@ -60,7 +60,7 @@ internal static class EwsMapper
     {
         Id = message.Id?.UniqueId ?? string.Empty,
         Subject = message.Subject,
-        From = ToDomainAddress(message.From ?? message.Sender),
+        From = ToDomainAddress(SenderOf(message)),
         To = ToDomainAddresses(message.ToRecipients),
         ReceivedAt = ToNullableUtc(message.DateTimeReceived),
         IsRead = message.IsRead,
@@ -71,6 +71,29 @@ internal static class EwsMapper
             ? null
             : message.ConversationTopic.Trim(),
     };
+
+    /// <summary>
+    /// Who a message came from: <c>From</c> when Exchange has one, otherwise the <c>Sender</c>.
+    /// Drafts and some system items have neither, and EWS throws
+    /// <see cref="Ews.ServiceObjectPropertyException"/> when a property was not part of the requested
+    /// property set - so an unloaded property reads as "not available" instead of failing the whole
+    /// query (which is what made the Drafts folder and every conversation load answer a 502).
+    /// </summary>
+    private static Ews.EmailAddress? SenderOf(Ews.EmailMessage message) =>
+        LoadedOrNull(() => message.From) ?? LoadedOrNull(() => message.Sender);
+
+    private static T? LoadedOrNull<T>(Func<T?> read)
+        where T : class
+    {
+        try
+        {
+            return read();
+        }
+        catch (Ews.ServiceObjectPropertyException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>EWS DateTime properties are non-nullable; unset means DateTime.MinValue.</summary>
     private static DateTimeOffset? ToNullableUtc(DateTime value) =>
@@ -95,7 +118,73 @@ internal static class EwsMapper
             ConversationTopic = s.ConversationTopic,
             Depth = depth,
             ParentId = parentId,
+            Preview = string.IsNullOrWhiteSpace(message.Preview) ? null : message.Preview.Trim(),
         };
+    }
+
+    /// <summary>
+    /// Flattens Exchange's conversation nodes into their items, preserving the requested
+    /// date-ascending (chronological) order so parents always precede their replies. A node's items
+    /// are the messages that share that node's parent.
+    /// </summary>
+    internal static List<(Ews.ConversationNode? Node, Ews.EmailMessage Item)> FlattenConversationNodes(
+        Ews.ConversationNodeCollection nodes)
+    {
+        var flat = new List<(Ews.ConversationNode?, Ews.EmailMessage)>();
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var node = nodes[i];
+            foreach (var item in node.Items)
+            {
+                if (item is Ews.EmailMessage message)
+                {
+                    flat.Add((node, message));
+                }
+            }
+        }
+
+        return flat;
+    }
+
+    /// <summary>
+    /// The conversation state of one conversation, from the items Exchange returned for it: how many
+    /// messages it holds and who is in it. The count is the number of items Exchange reported, so a
+    /// conversation with a single message is a conversation of one - never a thread.
+    /// </summary>
+    public static ConversationSummary ToConversationSummary(
+        Ews.ConversationResponse conversation,
+        string requestedId)
+    {
+        var items = FlattenConversationNodes(conversation.ConversationNodes);
+        var senders = new List<EmailAddress>(ConversationSummary.MaxParticipants);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? topic = null;
+
+        foreach (var (_, item) in items)
+        {
+            if (topic is null && !string.IsNullOrWhiteSpace(item.ConversationTopic))
+            {
+                topic = item.ConversationTopic.Trim();
+            }
+
+            if (senders.Count >= ConversationSummary.MaxParticipants)
+            {
+                continue;
+            }
+
+            var sender = ToDomainAddress(LoadedOrNull(() => item.From) ?? LoadedOrNull(() => item.Sender));
+            if (sender is not null && seen.Add(ConversationSummary.ParticipantKey(sender)))
+            {
+                senders.Add(sender);
+            }
+        }
+
+        var id = conversation.ConversationId?.UniqueId;
+        return new ConversationSummary(
+            string.IsNullOrWhiteSpace(id) ? requestedId : id,
+            topic,
+            items.Count,
+            senders);
     }
 
     /// <summary>

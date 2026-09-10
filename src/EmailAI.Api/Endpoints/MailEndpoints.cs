@@ -1,3 +1,4 @@
+using EmailAI.Api.Web;
 using EmailAI.Application.Exchange;
 using EmailAI.Domain.Mail;
 
@@ -9,6 +10,7 @@ namespace EmailAI.Api.Endpoints;
 ///   GET  /api/folders/{folderKey}/children
 ///   GET  /api/messages/{itemId}
 ///   GET  /api/messages/{itemId}/thread
+///   POST /api/conversations/summary
 ///   POST /api/messages/{itemId}/reply
 /// A folder key is a well-known folder ("inbox", "sent", "drafts", "deleted", "junk", "archive") or a
 /// custom (user-created) folder key reported by the children endpoint. Exchange item ids are
@@ -31,6 +33,9 @@ public static class MailEndpoints
 
         group.MapGet("/messages/{itemId}/thread", GetThreadAsync)
             .WithName("GetMessageThread");
+
+        group.MapPost("/conversations/summary", GetConversationSummariesAsync)
+            .WithName("GetConversationSummaries");
 
         group.MapPost("/messages/{itemId}/reply", ReplyAsync)
             .WithName("ReplyToMessage");
@@ -57,6 +62,40 @@ public static class MailEndpoints
     {
         var children = await mail.GetChildFoldersAsync(folderKey, ct);
         return Results.Ok(children);
+    }
+
+    /// <summary>
+    /// Reports what Exchange holds for the given conversations (message count + participants) in one
+    /// Exchange round trip. This is what makes "is this message part of a thread?" an answer from the
+    /// mailbox instead of a guess: the ids are checked before any Exchange call, and an empty request
+    /// is a caller error rather than an empty mailbox query.
+    /// </summary>
+    private static async Task<IResult> GetConversationSummariesAsync(
+        IExchangeMailService mail,
+        ConversationLookupRequest? request,
+        CancellationToken ct)
+    {
+        var conversationIds = (request?.ConversationIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (conversationIds.Length == 0)
+        {
+            return Results.BadRequest(new { error = "conversationIds is required." });
+        }
+
+        if (conversationIds.Length > ConversationSummary.MaxLookupBatch)
+        {
+            return Results.BadRequest(new
+            {
+                error = $"At most {ConversationSummary.MaxLookupBatch} conversations can be looked up at once.",
+            });
+        }
+
+        var summaries = await mail.GetConversationSummariesAsync(conversationIds, ct);
+        return Results.Ok(summaries);
     }
 
     private static async Task<IResult> GetMessageAsync(

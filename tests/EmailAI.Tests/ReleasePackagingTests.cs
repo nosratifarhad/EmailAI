@@ -322,7 +322,7 @@ public class ReleasePackagingTests(ITestOutputHelper output)
         Assert.Contains("Credential Manager", Repo.Read("RELEASE-NOTES.md"), StringComparison.Ordinal);
 
         var index = Repo.Read(".ai/spec/README.md");
-        for (var number = 1; number <= 15; number++)
+        for (var number = 1; number <= 17; number++)
         {
             var files = Directory.GetFiles(Path.Combine(Repo.Root, ".ai", "spec"), $"{number:00}-*.md");
             Assert.True(files.Length == 1, $"specification {number:00} is missing or duplicated in .ai/spec");

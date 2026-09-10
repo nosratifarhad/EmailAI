@@ -25,6 +25,7 @@ other.
 | Rendering and notifications | [HTML sanitization](#html-sanitization) · [Notifications](#notifications) |
 | UI behaviour | [UI behaviour](#ui-behaviour-settings-and-mail) · [App status refresh](#app-status-refresh) · [Initial inbox loading](#initial-inbox-loading) |
 | Mailbox folders | [Mailbox folders and custom folder navigation](#mailbox-folders-and-custom-folder-navigation) |
+| Conversations | [Conversations and threads](#conversations-and-threads) |
 | Failures | [Error handling](#error-handling) |
 | Verification and shipping | [Testing strategy](#testing-strategy) · [Release and package model](#release-and-package-model) · [Known limitations](#known-limitations) |
 | Change flow | [Branch protection and PR CI](#branch-protection-and-pr-ci) |
@@ -582,6 +583,40 @@ click a folder -> GET /api/folders/{folderKey}/messages  (the existing paged mes
 * No secret is involved: the key is an opaque Exchange folder id, and the feature adds no credential
   read, no account-returning endpoint and no authentication-fallback change. Details: specification
   [16](spec/16-mail-folders.md).
+
+## Conversations and threads
+
+A thread is what **Exchange** says it is: the message's conversation id (the same grouping Outlook
+shows), never a subject or a `RE:`/`FW:` prefix. One model - `ConversationSummary` (identity, topic,
+message count, participants, `IsThread = MessageCount > 1`) - drives all three thread-aware surfaces, so
+they cannot disagree:
+
+```text
+open a message      -> GET /api/messages/{itemId}                       the message itself
+                    -> POST /api/conversations/summary { ids }          one read-only Exchange read
+                          -> GetConversationItems(ids)                  count + participants
+                    -> GET /api/messages/{itemId}/thread                the timeline (threads only)
+    message list    -> POST /api/conversations/summary (after the list paints, one call per page,
+                          only for the conversations it does not know yet)
+```
+
+* **The list badge marks a real conversation.** A message Exchange reports inside a conversation of
+  more than one message shows a small badge (icon + count, with the people in its tooltip and read out
+  to screen readers) and names the people on its third line. A standalone message, or a conversation of
+  one, shows neither: the app never claims a thread it has not read.
+* **The reading pane shows the conversation.** A threaded message opens with a compact timeline above
+  it (sender, timestamp, subject, Exchange's body preview, reply nesting, the newest entry marked
+  *Latest*, the opened message marked as current). Clicking an entry opens that message; a conversation
+  that is already loaded is not re-fetched while the user moves inside it.
+* **"Summarize thread" is offered exactly for those conversations** - disabled for a standalone message
+  (with the reason in its tooltip) and while the conversation has not been read yet, and refused again
+  in the click handler. The summary itself always covers every message of the conversation
+  (the existing server-side thread-summarize flow).
+* **Lazy and bounded.** The first paint still makes exactly one Exchange call (the Inbox page); the
+  badges arrive from one extra lookup after the list is painted, at most 50 conversations and 5
+  participants per lookup, and the state is remembered for the circuit (and dropped when the configured
+  mailbox changes). A failed lookup produces no badge and no timeline - the mail itself is never
+  affected. Details: specification [17](spec/17-conversations-and-threads.md).
 
 ## Error handling
 

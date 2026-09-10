@@ -92,6 +92,7 @@ an AI action you explicitly triggered.
 | Feature | What it does |
 | --- | --- |
 | Exchange mail | Folder list, paged message list, message detail (From/To/Cc/Bcc, date, attachments), conversation view, reply/reply-all sent through EWS |
+| Conversations & threads | A message Exchange reports inside a conversation is badged in the list (icon + message count + who it is with), opening it shows the conversation timeline, and **Summarize thread** becomes available - a standalone message never pretends to be a thread |
 | Current-user identity | The AI is told who it is helping - the mailbox owner resolved from the Exchange account and directory, never inferred from the email text |
 | AI assistant | Summarize message, summarize thread, suggest reply, generate an editable reply draft |
 | Suggested replies | Shown in the AI panel and insertable into the reply box; nothing is ever sent automatically |
@@ -509,6 +510,7 @@ UI feature -> API used:
 | Folder navigation & message list | `GET /api/folders/{folder}/messages?offset&pageSize` |
 | Custom folder tree (expanding Inbox) | `GET /api/folders/{folder}/children` |
 | Message detail (From/To/Cc/Bcc, date, attachments, body) | `GET /api/messages/{itemId}` |
+| Conversation badge, conversation view, "Summarize thread" availability | `POST /api/conversations/summary` (one read-only lookup for several conversations) |
 | Conversation view | `GET /api/messages/{itemId}/thread` |
 | Reply / Reply-all (plain text sent as safe HTML) | `POST /api/messages/{itemId}/reply` |
 | AI readiness hint + disabled AI buttons | `GET /api/ai/readiness` |
@@ -589,6 +591,35 @@ the Exchange account, never inferred from the email text (see "Current-user iden
 - If a folder has no subfolders, the arrow disappears after the first expansion (the folder is simply
   empty). A folder without a name is shown as `(unnamed folder)` instead of a blank row.
 
+## Conversations and threads
+
+- **A thread is what Exchange says it is.** Identity is Exchange's conversation id - the same grouping
+  Outlook shows - never a subject or a `RE:`/`FW:` prefix: a reply whose subject was edited stays in
+  the same conversation, and two unrelated mails that happen to share a subject stay two conversations.
+  Nothing here is guessed from the text.
+- **The list says which messages belong to a conversation.** A message Exchange reports inside a
+  conversation of more than one message carries a small badge (an icon plus the message count, with the
+  people named in its tooltip and read out to screen readers), and its third line names the people in
+  the conversation. A standalone message - or a conversation of one - shows neither: the app never
+  claims a thread it has not read.
+- **Opening a threaded message brings its conversation with it.** A compact timeline above the reading
+  pane lists every message chronologically (sender, timestamp, subject and Exchange's own body preview),
+  keeps the reply nesting, marks the newest message **Latest**, and marks the message you opened as the
+  current one. Clicking an entry opens that message; the conversation can be hidden again, and a
+  conversation that is already loaded is never re-fetched while you move inside it.
+- **"Summarize thread" is offered exactly for those conversations.** For a standalone message the
+  button is disabled and its tooltip says why; while the conversation has not been read from Exchange
+  yet it says it is still checking. Clicking it summarizes **every** message of the conversation
+  server-side - never just the message on screen. The list badge, the reading pane and the button all
+  read the same conversation state, so they can never disagree.
+- **Conversation state is read after the list paints, never as part of it.** The first paint still
+  performs exactly one Exchange query (spec 11); the badges arrive a moment later from one extra
+  read-only lookup, and conversations already read are remembered for the session. A conversation that
+  cannot be read produces no badge and no thread - reading mail, replying and everything else keeps
+  working.
+- The message list stays a **flat list** (badge instead of Outlook's collapsible conversation groups),
+  and the conversation timeline is a compact summary, not a full inline expansion of every message.
+
 ## Current-user identity (who the AI is told it is helping)
 
 The AI must never guess who the user is from the email content, so every AI operation is
@@ -644,7 +675,10 @@ Blazor AI panel  ->  POST /api/ai/...  ->  AiEndpoints (loads message/thread via
 
 - **Summarize** - concise summary of the open message (subject/sender/date/body context).
 - **Summarize thread** - whole conversation (chronological, bodies loaded server-side)
-  with sections: Summary / Decisions / Open questions / Action items.
+  with sections: Summary / Decisions / Open questions / Action items. It is offered only for a message
+  that Exchange reports inside a conversation of more than one message, so a standalone message cannot
+  trigger it (see
+  [Conversations and threads](#conversations-and-threads)).
 - **Suggest reply** - key points + a short sample answer, shown in the AI panel; the
   user can insert it into the reply box.
 - **Generate reply** - complete plain-text draft **inserted into the editable reply

@@ -8,6 +8,12 @@ public sealed class ThreadMessage : MessageSummary
 
     /// <summary>Id of the message this one directly replies to (when known).</summary>
     public string? ParentId { get; init; }
+
+    /// <summary>
+    /// Exchange's short body preview (the opening words of the message). It lets a collapsed
+    /// conversation entry say what the message is about without loading its body.
+    /// </summary>
+    public string? Preview { get; init; }
 }
 
 /// <summary>
@@ -24,4 +30,17 @@ public sealed class MessageThread
     public string? FocusMessageId { get; init; }
 
     public IReadOnlyList<ThreadMessage> Messages { get; init; } = [];
+
+    /// <summary>
+    /// The people in this conversation: the distinct senders, in the order they appear in
+    /// <see cref="Messages"/> (which is chronological), capped for display.
+    /// </summary>
+    public IReadOnlyList<EmailAddress> Participants => ConversationSummary.SendersOf(Messages);
+
+    /// <summary>
+    /// The conversation state this thread represents - the same model the message list badges and
+    /// the "Summarize thread" availability read, so the three surfaces can never disagree.
+    /// </summary>
+    public ConversationSummary Conversation =>
+        new(ConversationId, Topic, TotalCount, Participants);
 }

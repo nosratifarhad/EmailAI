@@ -46,7 +46,8 @@ folder is selected. No new mailbox state is written anywhere.
    the mailbox is a child of *its* parent and is never reported under Inbox. A calendar, contacts,
    tasks or search folder is never reported as a mail folder child.
 5. **Lazy, bounded discovery.** The first paint performs exactly one Exchange query - the Inbox
-   message page (spec 11) - and no folder walk. The walk runs on the first expand, is bounded (100
+   message page (spec 11) - and neither a folder walk nor a conversation lookup
+   ([17](17-conversations-and-threads.md)). The walk runs on the first expand, is bounded (100
    folders per page, at most 5 pages, at most 500 folders) and its result is cached for the lifetime
    of the circuit. Re-expanding, collapsing and switching folders never repeat it.
 6. **The arrow and the label are different controls.** Expanding/collapsing never changes the selected

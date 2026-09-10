@@ -79,6 +79,18 @@ public sealed class EmailApiClient(HttpClient http)
         => GetAsync<MessageThread>($"api/messages/{Uri.EscapeDataString(itemId)}/thread", cancellationToken);
 
     /// <summary>
+    /// POST /api/conversations/summary - the state of several conversations in one call: how many
+    /// messages each one holds and who is in it. Read-only; nothing in the mailbox is changed.
+    /// </summary>
+    public Task<IReadOnlyList<ConversationSummary>> GetConversationSummariesAsync(
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken)
+        => PostAsync<ConversationLookupRequest, IReadOnlyList<ConversationSummary>>(
+            "api/conversations/summary",
+            new ConversationLookupRequest { ConversationIds = conversationIds },
+            cancellationToken);
+
+    /// <summary>
     /// GET /health/ai - AI provider connectivity. Always 200 with status
     /// connected/not_configured/authentication_failed/unavailable.
     /// </summary>
