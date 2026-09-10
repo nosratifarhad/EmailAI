@@ -41,6 +41,7 @@ The local backend serves this surface (one origin - no CORS, no second server):
 
 ```text
 GET    /api/folders/{folder}/messages            message list (paged)
+GET    /api/folders/{folder}/children            the folders nested below a folder (custom folders)
 GET    /api/messages/{itemId}                    full message
 GET    /api/messages/{itemId}/thread             conversation
 POST   /api/messages/{itemId}/reply              send reply (EWS) - the ONLY sender
@@ -506,6 +507,7 @@ UI feature -> API used:
 | --- | --- |
 | Header status pills (App / Exchange / AI) | `GET /health`, `/health/exchange`, `/health/ai` (polled every 20 s, re-checked immediately after a Settings save) |
 | Folder navigation & message list | `GET /api/folders/{folder}/messages?offset&pageSize` |
+| Custom folder tree (expanding Inbox) | `GET /api/folders/{folder}/children` |
 | Message detail (From/To/Cc/Bcc, date, attachments, body) | `GET /api/messages/{itemId}` |
 | Conversation view | `GET /api/messages/{itemId}/thread` |
 | Reply / Reply-all (plain text sent as safe HTML) | `POST /api/messages/{itemId}/reply` |
@@ -562,6 +564,30 @@ the Exchange account, never inferred from the email text (see "Current-user iden
   first EWS call of a session can be slow or refused) gets exactly **one bounded retry**
   before the list reports an error - no delay, no credential change, and a second failure
   still reaches the user unchanged.
+
+## Custom mail folders (Outlook-style folder hierarchy)
+
+- **The sidebar shows the folders your mailbox really has.** Inbox, Sent, Deleted (and the other
+  well-known folders) are the fixed top level; the folders you created in Outlook are nested under
+  Inbox and are read from Exchange - nothing is hard-coded and no sample folder is ever invented.
+- **Expanding Inbox is a separate action from selecting it.** The arrow expands/collapses the
+  children and never changes the selected folder; clicking *Inbox* still loads the Inbox exactly as
+  before, and clicking a child folder loads only that folder's messages with the same paging,
+  sorting, empty state, refresh and error handling as every other folder.
+- **Nothing is fetched until you ask.** The first paint performs exactly one Exchange query (the
+  Inbox page); the folder walk runs the first time Inbox is expanded and its result is remembered for
+  the session. Re-expanding, collapsing and switching between the discovered folders never query
+  Exchange for the folder list again.
+- **A folder is identified by its Exchange folder id, not its name** (`folder:<hex>` REST key), so two
+  folders with the same name stay distinguishable and renaming a folder in Outlook never changes which
+  one is selected. The key is an opaque folder id, never a credential; the UI holds no Exchange
+  account and no secret.
+- **A folder that cannot be read never breaks the mail client.** A failed folder walk is reported
+  inside the folder pane with a retry action while Inbox/Sent/Deleted keep working; a selected folder
+  that Exchange reports as gone answers `404 folder_not_found` (any other unusable-folder answer stays
+  a typed error) and the list shows its normal error state - never a raw Exchange fault.
+- If a folder has no subfolders, the arrow disappears after the first expansion (the folder is simply
+  empty). A folder without a name is shown as `(unnamed folder)` instead of a blank row.
 
 ## Current-user identity (who the AI is told it is helping)
 
@@ -795,6 +821,26 @@ The features added on top of that slice are covered by dedicated suites:
   state rather than an error for an empty mailbox. Two further cases prove the resilience
   behaviour: one transient connection failure is absorbed by a single retry (the first paint
   still carries the Inbox, two attempts), while two failures surface the real error.
+- `CustomFolderKeyTests` - the identity of a custom Exchange folder: the `folder:<hex>` key
+  round-trips any folder id exactly, carries no URL-hostile character, is case-insensitively
+  distinct for distinct ids (so two folders can never collapse into one cache entry), and
+  rejects every malformed key (a well-known key, an empty/odd/invalid payload).
+- `MailFolderEndpointsTests` - custom folders through the real host: `GET
+  /api/folders/inbox/children` reports identity/name/parent/type/hasChildren, only the direct
+  children of the requested parent are returned (a grandchild is not a child of Inbox), a custom
+  folder key lists exactly that folder's messages after the URL round-trip, an empty custom folder
+  is an empty list (not an error), and every failure is typed and secret-free (`400 bad_request`,
+  `404 folder_not_found`, `502 exchange_authentication_failed`, `503 exchange_connection_failed`).
+- `MailFolderSidebarTests` - the sidebar state that the component renders: Inbox is the only
+  expandable row, expanding indents the custom folders directly below it, expanding does not change
+  the selection, collapsing hides the children but keeps the selection, selecting a child selects it
+  (and opens its parent), two same-named folders stay distinguishable, an empty folder loses its
+  arrow, a failed discovery keeps every top-level folder usable with a retry, and an Exchange
+  configuration change resets the discovered hierarchy.
+- `CustomMailFolderUiTests` - the first paint renders the folder hierarchy control while performing
+  **no folder walk** (one Inbox query, no children query, no custom folder in the HTML), keeps the
+  top-level folder order and gives only Inbox an arrow, still shows the Inbox when the folder walk
+  would fail, and the typed client requests the encoded children endpoint and reads the folders.
 - `MailboxIdentityCandidatesTests` - the names EWS `ResolveNames` is asked for: the
   impersonated mailbox first, then the configured account, then the Windows account both
   fully qualified **and** bare (a live directory answers for the bare account name and

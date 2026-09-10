@@ -4,12 +4,15 @@ using EmailAI.Domain.Mail;
 namespace EmailAI.Api.Endpoints;
 
 /// <summary>
-/// REST surface of the Phase-1 vertical slice:
+/// REST surface of the mail vertical slice:
 ///   GET  /api/folders/{folderKey}/messages?offset=0&pageSize=20
+///   GET  /api/folders/{folderKey}/children
 ///   GET  /api/messages/{itemId}
 ///   GET  /api/messages/{itemId}/thread
 ///   POST /api/messages/{itemId}/reply
-/// Exchange item ids are URL-safe base64; clients should EscapeDataString them.
+/// A folder key is a well-known folder ("inbox", "sent", "drafts", "deleted", "junk", "archive") or a
+/// custom (user-created) folder key reported by the children endpoint. Exchange item ids are
+/// URL-safe base64; clients should EscapeDataString them.
 /// </summary>
 public static class MailEndpoints
 {
@@ -19,6 +22,9 @@ public static class MailEndpoints
 
         group.MapGet("/folders/{folderKey}/messages", GetMessagesAsync)
             .WithName("GetFolderMessages");
+
+        group.MapGet("/folders/{folderKey}/children", GetChildFoldersAsync)
+            .WithName("GetChildFolders");
 
         group.MapGet("/messages/{itemId}", GetMessageAsync)
             .WithName("GetMessage");
@@ -42,6 +48,15 @@ public static class MailEndpoints
 
         var page = await mail.GetMessagesAsync(folderKey, offset, pageSize, ct);
         return Results.Ok(page);
+    }
+
+    private static async Task<IResult> GetChildFoldersAsync(
+        IExchangeMailService mail,
+        string folderKey = "inbox",
+        CancellationToken ct = default)
+    {
+        var children = await mail.GetChildFoldersAsync(folderKey, ct);
+        return Results.Ok(children);
     }
 
     private static async Task<IResult> GetMessageAsync(

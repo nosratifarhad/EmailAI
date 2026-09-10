@@ -19,8 +19,8 @@ manual/packaged checks.
 
 | Layer | What it proves | How it runs |
 | --- | --- | --- |
-| Unit | Pure logic: options/validation, endpoint building, sanitisation, direction, identity/aliases, notification detection, credential policy, status fan-out | `dotnet test tests/EmailAI.Tests -c Release` (offline) |
-| Host (integration of the real HTTP surface) | The real ASP.NET Core host with in-memory stores: JSON contracts, status codes, headers, no-secret guarantees, prerendered HTML | same command (`WebApplicationFactory<Program>`, `SettingsHostFactory`) |
+| Unit | Pure logic: options/validation, endpoint building, sanitisation, direction, identity/aliases, notification detection, credential policy, status fan-out, folder keys, folder-sidebar state | `dotnet test tests/EmailAI.Tests -c Release` (offline) |
+| Host (integration of the real HTTP surface) | The real ASP.NET Core host with in-memory stores: JSON contracts, status codes, headers, no-secret guarantees, prerendered HTML, the custom-folder children contract | same command (`WebApplicationFactory<Program>`, `SettingsHostFactory`) |
 | Packaging contract | The files that define a release define a distributable one: artifact name derived from the version, per-user/x64 NSIS with the bundled backend, sample configuration with placeholders only, no development-only configuration, no private endpoint, CI that runs the same pipeline, documentation that names the real artifact | same command (`ReleasePackagingTests`; its scan-gate case runs `node` and reports a skip when Node.js is absent) |
 | Pull-request CI | The gate a change must pass before it may reach `main`: the solution restores, builds and passes its tests, the Electron shell and the pipeline scripts parse, and the source tree carries no secret-shaped value, no development-only `appsettings.*.json` and no non-placeholder endpoint - the release gates without any packaging | `.github/workflows/ci.yml` on `windows-latest`; the branch ruleset requires its job, the check `Verify pull request`, before a merge |
 | Opt-in real | A real AI chat completion and a real EWS probe, run only when the environment variables are present | `EMAILAI_AI_INTEGRATION_TEST=true` / `EMAILAI_EXCHANGE_INTEGRATION_TEST=true` + the `EMAILAI_*`/`EXCHANGE_*` variables |
@@ -81,5 +81,7 @@ they are documented in `.env.example` and in the README's *Testing* section.
 `desktop/scripts/release.js`, `desktop/scripts/verify-secrets.js`, `.github/workflows/release.yml`,
 `.github/workflows/ci.yml`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`.
 
-**Tests.** The suite itself. Current state: **375 automated tests, 0 failures** (`dotnet test
-tests/EmailAI.Tests -c Release`).
+**Tests.** The suite itself. Current state: **420 automated tests, 0 failures** (`dotnet test
+tests/EmailAI.Tests -c Release`). Feature suites are named per specification; the folder-hierarchy
+feature is pinned by `CustomFolderKeyTests`, `MailFolderEndpointsTests`, `MailFolderSidebarTests` and
+`CustomMailFolderUiTests` (16).

@@ -19,20 +19,55 @@
     }
 
     @* ---- Folders pane ------------------------------------------------- *@
+    @* The fixed folders plus the custom child folders discovered in the user's Exchange mailbox.
+       The arrow expands/collapses (it never selects); the label selects the folder. *@
     <aside class="mail-pane pane-folders">
         <div class="pane-toolbar">
             <button type="button" class="icon-btn mobile-only" @onclick="ShowList" title="Back to messages" aria-label="Back to messages">‹</button>
             <span class="pane-title">Folders</span>
         </div>
         <nav class="folder-list" aria-label="Mail folders">
-            @foreach (var folder in Folders)
+            @foreach (var row in _sidebar.Rows(_folder.Key))
             {
-                <button type="button"
-                        class="folder-item @(folder == _folder ? "active" : null)"
-                        @key="folder.Key"
-                        @onclick="() => SelectFolderAsync(folder)">
-                    <span class="folder-label">@folder.Label</span>
-                </button>
+                <div class="folder-group" @key="row.Folder.Key">
+                    <div class="folder-node">
+                        @if (row.IsExpandable)
+                        {
+                            <button type="button"
+                                    class="folder-toggle"
+                                    title="@(row.IsExpanded ? "Collapse" : "Expand")"
+                                    aria-label="@(row.IsExpanded ? $"Collapse {row.Folder.Label}" : $"Expand {row.Folder.Label}")"
+                                    aria-expanded="@(row.IsExpanded ? "true" : "false")"
+                                    @onclick="ToggleChildrenAsync">
+                                <span class="folder-caret" aria-hidden="true">@(row.IsExpanded ? "▾" : "▸")</span>
+                            </button>
+                        }
+                        else
+                        {
+                            <span class="folder-toggle folder-toggle-empty" aria-hidden="true"></span>
+                        }
+
+                        <button type="button"
+                                class="folder-item @(row.IsSelected ? "active" : null) @(row.IsChild ? "folder-child" : null)"
+                                @onclick="() => SelectFolderAsync(row.Folder)">
+                            <span class="folder-label">@row.Folder.Label</span>
+                        </button>
+                    </div>
+
+                    @if (row.IsExpandable && row.IsExpanded && _sidebar.ChildrenLoading)
+                    {
+                        <div class="folder-children">
+                            <LoadingState Text="Loading folders…" />
+                        </div>
+                    }
+                    else if (row.IsExpandable && row.IsExpanded && _sidebar.ChildrenError is { } childrenError)
+                    {
+                        <div class="folder-children folder-children-error" role="alert">
+                            <span>@childrenError</span>
+                            <button type="button" class="mini-btn" @onclick="LoadChildrenAsync">Try again</button>
+                        </div>
+                    }
+                </div>
             }
         </nav>
         <div class="pane-footer">
@@ -488,7 +523,17 @@
     private enum BodyView { Text, Html }
     private enum AiTask { None, SummarizeMessage, SummarizeThread, SuggestReply, GenerateReply }
 
-    private readonly IReadOnlyList<FolderInfo> Folders = FolderCatalog.All;
+    /// <summary>
+    /// The sidebar structure: the fixed folders plus the custom child folders discovered lazily in
+    /// the user's Exchange mailbox. It owns what is rendered (rows, indent, selection, arrow).
+    /// </summary>
+    private readonly MailFolderSidebar _sidebar = new(FolderCatalog.All);
+
+    /// <summary>
+    /// Guards the lazy child-folder load: an answer that arrives after a newer load (or after the
+    /// mailbox changed) is ignored instead of overwriting the current state.
+    /// </summary>
+    private int _childrenVersion;
 
     private FolderInfo _folder = FolderCatalog.Inbox;
     private IReadOnlyList<MessageSummary> _messages = [];
@@ -653,6 +698,17 @@
 
             if (change.Area is AppStatusArea.Exchange or AppStatusArea.All)
             {
+                // A different mailbox holds different folders: forget the discovered hierarchy, and
+                // never keep showing a custom folder that may not exist in the new mailbox.
+                _childrenVersion++;
+                _sidebar.Reset();
+
+                if (_folder.WellKnownType == MailFolderTypes.Custom)
+                {
+                    _folder = FolderCatalog.Inbox;
+                    _offset = 0;
+                }
+
                 ClearDetail();
                 await LoadMessagesAsync();
             }
@@ -751,6 +807,10 @@
     private async Task SelectFolderAsync(FolderInfo folder)
     {
         _folder = folder;
+
+        // A custom folder is a child of Inbox: keep its parent open so the selection stays visible.
+        _sidebar.Select(folder.Key);
+
         _offset = 0;
         _messages = [];
         _totalCount = 0;
@@ -761,6 +821,70 @@
 
         ClearDetail();
         await LoadMessagesAsync();
+    }
+
+    /// <summary>
+    /// The folder arrow: expands or collapses the child folders. It deliberately does NOT select the
+    /// folder - selecting a folder and expanding it are two different user intentions.
+    /// </summary>
+    private async Task ToggleChildrenAsync()
+    {
+        if (_sidebar.Expanded)
+        {
+            _sidebar.Collapse();
+            return;
+        }
+
+        _sidebar.Expand();
+        await LoadChildrenAsync();
+    }
+
+    /// <summary>
+    /// Loads the custom child folders of Inbox from Exchange - once per circuit (the result is
+    /// remembered), on demand, and never during the first paint. A failure is reported inside the
+    /// folder pane and leaves every top-level folder usable; the user can retry, and a load that is
+    /// superseded (a newer load, a mailbox change, a disposed circuit) is ignored.
+    /// </summary>
+    private async Task LoadChildrenAsync()
+    {
+        if (_sidebar.ChildrenLoaded || _sidebar.ChildrenLoading)
+        {
+            return;
+        }
+
+        var version = ++_childrenVersion;
+        _sidebar.BeginChildrenLoad();
+
+        try
+        {
+            var children = await Api.GetChildFoldersAsync(FolderCatalog.Inbox.Key, CancellationToken.None);
+            if (version != _childrenVersion || _disposed)
+            {
+                return;
+            }
+
+            _sidebar.ApplyChildren([.. children.Select(FolderInfo.FromMailFolder)]);
+        }
+        catch (EmailApiException ex) when (version == _childrenVersion)
+        {
+            _sidebar.FailChildrenLoad(ex.Message);
+        }
+        catch (HttpRequestException) when (version == _childrenVersion)
+        {
+            _sidebar.FailChildrenLoad(NetworkMessage);
+        }
+        catch (OperationCanceledException)
+        {
+            // The circuit is going away - leave the messenger out of it.
+        }
+        catch (Exception) when (version != _childrenVersion)
+        {
+            // The failure belongs to a superseded load - ignore it, exactly like the list load.
+        }
+        catch (Exception)
+        {
+            _sidebar.FailChildrenLoad(GenericMessage);
+        }
     }
 
     private async Task RefreshAsync() => await LoadMessagesAsync();

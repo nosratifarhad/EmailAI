@@ -33,6 +33,8 @@ provider.
 4. Only two data paths leave the machine: EWS/SOAP to the configured Exchange endpoint, and
    HTTPS to the configured AI provider. There is no EmailAI service in the middle.
 5. Exactly one process serves the UI; there is no second web server and no CORS configuration.
+6. The mailbox folder hierarchy the UI shows is read from Exchange through the same authenticated
+   EWS connection, and it adds no data path of its own (16).
 
 **Failure modes.**
 

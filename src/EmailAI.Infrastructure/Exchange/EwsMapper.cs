@@ -98,6 +98,23 @@ internal static class EwsMapper
         };
     }
 
+    /// <summary>
+    /// Maps a discovered child folder to the UI-facing folder model. The identity is the Exchange
+    /// folder id (encoded as a custom REST folder key), never the display name: names are neither
+    /// unique nor stable, and the key must keep addressing the same folder after a rename.
+    /// </summary>
+    public static MailFolder ToChildFolder(Ews.Folder folder, string parentKey, string uniqueId) => new()
+    {
+        Id = CustomFolderKey.FromUniqueId(uniqueId),
+        DisplayName = string.IsNullOrWhiteSpace(folder.DisplayName) ? UnnamedFolder : folder.DisplayName.Trim(),
+        ParentId = parentKey,
+        WellKnownType = MailFolderTypes.Custom,
+        HasChildren = folder.ChildFolderCount > 0,
+    };
+
+    /// <summary>Shown instead of a blank sidebar row when Exchange reports no folder name.</summary>
+    internal const string UnnamedFolder = "(unnamed folder)";
+
     public static EmailMessage ToDetail(Ews.EmailMessage message)
     {
         var summary = ToSummary(message);

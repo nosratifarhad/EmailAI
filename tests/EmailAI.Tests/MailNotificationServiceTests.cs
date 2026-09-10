@@ -182,6 +182,9 @@ public sealed class MailNotificationServiceTests
         public Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public Task<IReadOnlyList<MailFolder>> GetChildFoldersAsync(string parentKey, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public Task<MessageThread> GetThreadAsync(string itemId, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
