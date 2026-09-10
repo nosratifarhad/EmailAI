@@ -71,7 +71,7 @@ folder is selected. No new mailbox state is written anywhere.
 | --- | --- |
 | Exchange unavailable / folder walk fails | `503 exchange_connection_failed`; the pane shows the message + retry; all top-level folders keep working |
 | Folder walk fails while the page opens | Not attempted on the first paint (invariant 5); Inbox renders as usual |
-| Selected folder deleted/moved in Outlook | `404 folder_not_found`; the message list shows its normal typed error with a retry |
+| Selected folder deleted/moved in Outlook | `404 folder_not_found` when Exchange reports the folder as missing (`ErrorFolderNotFound`); any other Exchange answer for an unusable folder id stays a typed `502`/`503`. Either way the message list shows its normal error state with a retry, never a raw fault |
 | No access to the selected folder | `502 exchange_authentication_failed` (the existing access-denied classification); no raw EWS fault |
 | Malformed / unknown folder key | `400 bad_request`, before any Exchange call |
 | Folder has no children | The arrow disappears after the first successful (empty) discovery; Inbox stays selected |
@@ -113,4 +113,7 @@ delegates to (`MailFolderSidebar`), plus the prerendered markup and the client r
 deliberately references no Blazor component-test framework, so a browser-level click test is a manual
 check (14). The EWS traversal itself (a shallow listing returns only direct children) is Exchange's
 documented behaviour and is pinned at the service boundary by the host/fake tests rather than
-simulated.
+simulated. The folder-gone classification is pinned by the typed host test (`ErrorFolderNotFound` →
+`404 folder_not_found`); it cannot be provoked against a live mailbox without deleting a folder the
+user owns - a live probe with an id that never existed answered a typed `502 exchange_mailbox_error`,
+which is the same contained behaviour (no raw fault, list error state with a retry).

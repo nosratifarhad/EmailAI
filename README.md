@@ -584,7 +584,8 @@ the Exchange account, never inferred from the email text (see "Current-user iden
   account and no secret.
 - **A folder that cannot be read never breaks the mail client.** A failed folder walk is reported
   inside the folder pane with a retry action while Inbox/Sent/Deleted keep working; a selected folder
-  that no longer exists answers `404 folder_not_found` and the list shows its normal error state.
+  that Exchange reports as gone answers `404 folder_not_found` (any other unusable-folder answer stays
+  a typed error) and the list shows its normal error state - never a raw Exchange fault.
 - If a folder has no subfolders, the arrow disappears after the first expansion (the folder is simply
   empty). A folder without a name is shown as `(unnamed folder)` instead of a blank row.
 
