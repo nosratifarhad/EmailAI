@@ -27,8 +27,10 @@ query is made and the interactive first render is not empty.
 2. The page fetched while prerendering is persisted and restored by the interactive instance:
    one Exchange query per cold start, and no flash of an empty list.
 3. The first paint performs exactly **one** Exchange query (the Inbox message page). Nothing else -
-   in particular not the custom folder walk of [16](16-mail-folders.md) - may run while the page is
-   opening.
+   in particular not the custom folder walk of [16](16-mail-folders.md) and not the conversation
+   lookup of [17](17-conversations-and-threads.md) - may run while the page is opening. The
+   conversation state of the listed rows is read only after the list is on screen, which is why the
+   very first HTML contains no conversation badge.
 4. No artificial delay, no forced folder switch and no reload is ever required for the Inbox to
    appear - the app does not depend on timing.
 5. An empty folder shows the explicit empty state (never an error, never a blank pane).
@@ -39,6 +41,9 @@ query is made and the interactive first render is not empty.
    unidentified 502/503/504). Authentication, configuration, not-found and mailbox errors are
    answers, not hiccups.
 8. A deep link (`/?item=<id>`) is honoured on the initial render; an unusable value is ignored.
+   Opening that message is an explicit request, so - unlike the cold start of the Inbox - it may read
+   the message, its conversation state and (for a conversation) its timeline
+   ([17](17-conversations-and-threads.md)).
 
 **Failure modes.**
 
@@ -66,3 +71,6 @@ error for an empty mailbox, absorbs one transient connection failure with a sing
 attempts, Inbox still painted) and surfaces the real error after two failures.
 `CustomMailFolderUiTests` - the same first paint performs **no** folder walk (no children query, no
 custom folder in the HTML) and still renders the Inbox when the walk would fail.
+`ThreadedMailUiTests` - the same first paint also performs **no** conversation lookup (and therefore
+renders no conversation badge), while the deep-link open reads exactly the message, its conversation
+state and its timeline ([17](17-conversations-and-threads.md)).

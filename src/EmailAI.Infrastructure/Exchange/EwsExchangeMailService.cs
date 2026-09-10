@@ -27,6 +27,7 @@ public sealed class EwsExchangeMailService : IExchangeMailService
     private static readonly Ews.PropertySet FolderHeaderPropertySet = new(Ews.BasePropertySet.IdOnly,
         Ews.ItemSchema.Subject,
         Ews.EmailMessageSchema.From,
+        Ews.EmailMessageSchema.Sender,
         Ews.ItemSchema.DateTimeReceived,
         Ews.EmailMessageSchema.IsRead,
         Ews.ItemSchema.HasAttachments,
@@ -58,6 +59,7 @@ public sealed class EwsExchangeMailService : IExchangeMailService
     private static readonly Ews.PropertySet ThreadItemPropertySet = new(Ews.BasePropertySet.IdOnly,
         Ews.ItemSchema.Subject,
         Ews.EmailMessageSchema.From,
+        Ews.EmailMessageSchema.Sender,
         Ews.EmailMessageSchema.ToRecipients,
         Ews.ItemSchema.DateTimeReceived,
         Ews.EmailMessageSchema.IsRead,
@@ -65,7 +67,19 @@ public sealed class EwsExchangeMailService : IExchangeMailService
         Ews.ItemSchema.Importance,
         Ews.ItemSchema.ConversationId,
         Ews.EmailMessageSchema.ConversationTopic,
+        Ews.ItemSchema.Preview,
         Ews.EmailMessageSchema.InternetMessageId);
+
+    /// <summary>
+    /// What one conversation lookup reads: the identity, the topic, who sent each message and the
+    /// preview Exchange already computed. Deliberately no bodies - the point is the conversation's
+    /// size and participants, not its content.
+    /// </summary>
+    private static readonly Ews.PropertySet ConversationItemPropertySet = new(Ews.BasePropertySet.IdOnly,
+        Ews.EmailMessageSchema.From,
+        Ews.EmailMessageSchema.Sender,
+        Ews.ItemSchema.ConversationId,
+        Ews.EmailMessageSchema.ConversationTopic);
 
     private static readonly Ews.PropertySet SentScanPropertySet = new(Ews.BasePropertySet.IdOnly,
         Ews.ItemSchema.Subject,
@@ -323,6 +337,63 @@ public sealed class EwsExchangeMailService : IExchangeMailService
     private static bool IsMailFolder(Ews.Folder folder)
         => folder is not (Ews.SearchFolder or Ews.ContactsFolder or Ews.CalendarFolder or Ews.TasksFolder);
 
+    /// <summary>
+    /// Reads the state of several conversations in ONE Exchange round trip. Only what Exchange
+    /// reports comes back: a conversation it no longer holds (deleted, or moved out of the mailbox)
+    /// is absent from the result rather than invented as a conversation of one. An empty request
+    /// makes no Exchange call at all.
+    /// </summary>
+    public Task<IReadOnlyList<ConversationSummary>> GetConversationSummariesAsync(
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken = default)
+    {
+        var requested = (conversationIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Take(ConversationSummary.MaxLookupBatch)
+            .ToArray();
+
+        if (requested.Length == 0)
+        {
+            return Task.FromResult<IReadOnlyList<ConversationSummary>>([]);
+        }
+
+        return RunExchangeAsync("GetConversations", async (service, ct) =>
+        {
+            var requests = requested
+                .Select(id => new Ews.ConversationRequest(new Ews.ConversationId(id), string.Empty))
+                .ToArray();
+
+            var responses = await service.GetConversationItems(
+                requests,
+                ConversationItemPropertySet,
+                foldersToIgnore: Array.Empty<Ews.FolderId>(),
+                sortOrder: Ews.ConversationSortOrder.DateOrderAscending,
+                mailboxScope: Ews.MailboxSearchLocation.PrimaryOnly,
+                ct).ConfigureAwait(false);
+
+            var summaries = new List<ConversationSummary>(requested.Length);
+            for (var i = 0; i < responses.Count; i++)
+            {
+                var response = responses[i];
+
+                // A conversation Exchange refused or no longer holds is left out: a caller is never
+                // handed a fabricated message count.
+                if (response.Result != Ews.ServiceResult.Success || response.Conversation is null)
+                {
+                    continue;
+                }
+
+                summaries.Add(EwsMapper.ToConversationSummary(
+                    response.Conversation,
+                    i < requested.Length ? requested[i] : string.Empty));
+            }
+
+            return (IReadOnlyList<ConversationSummary>)summaries;
+        }, cancellationToken);
+    }
+
     public Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken = default)
     {
         var normalizedId = NormalizeItemId(itemId);
@@ -360,7 +431,7 @@ public sealed class EwsExchangeMailService : IExchangeMailService
                 sortOrder: Ews.ConversationSortOrder.DateOrderAscending,
                 cancellationToken);
 
-            var flat = FlattenConversationNodes(conversation.ConversationNodes);
+            var flat = EwsMapper.FlattenConversationNodes(conversation.ConversationNodes);
             if (flat.Count == 0)
             {
                 flat.Add((null, source));
@@ -382,30 +453,6 @@ public sealed class EwsExchangeMailService : IExchangeMailService
                 Messages = messages,
             };
         }, cancellationToken);
-
-    /// <summary>
-    /// Conversation nodes arrive in the requested date-ascending order; each
-    /// node carries the items that share that node's parent. The returned list
-    /// preserves that server chronology so parents always precede replies.
-    /// </summary>
-    private static List<(Ews.ConversationNode? Node, Ews.EmailMessage Item)> FlattenConversationNodes(
-        Ews.ConversationNodeCollection nodes)
-    {
-        var flat = new List<(Ews.ConversationNode?, Ews.EmailMessage)>();
-        for (var i = 0; i < nodes.Count; i++)
-        {
-            var node = nodes[i];
-            foreach (var item in node.Items)
-            {
-                if (item is Ews.EmailMessage message)
-                {
-                    flat.Add((node, message));
-                }
-            }
-        }
-
-        return flat;
-    }
 
     /// <summary>
     /// The parent of a node is the message whose InternetMessageId equals the

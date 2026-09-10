@@ -35,11 +35,15 @@
                         {
                             <button type="button"
                                     class="folder-toggle"
-                                    title="@(row.IsExpanded ? "Collapse" : "Expand")"
+                                    title="@(row.IsExpanded ? $"Hide the folders inside {row.Folder.Label}" : $"Show the folders inside {row.Folder.Label}")"
                                     aria-label="@(row.IsExpanded ? $"Collapse {row.Folder.Label}" : $"Expand {row.Folder.Label}")"
                                     aria-expanded="@(row.IsExpanded ? "true" : "false")"
                                     @onclick="ToggleChildrenAsync">
-                                <span class="folder-caret" aria-hidden="true">@(row.IsExpanded ? "▾" : "▸")</span>
+                                <span class="folder-caret @(row.IsExpanded ? "is-expanded" : null)" aria-hidden="true">
+                                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true" focusable="false">
+                                        <path d="M6 3.4 10.6 8 6 12.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                </span>
                             </button>
                         }
                         else
@@ -118,6 +122,7 @@
             {
                 @foreach (var item in _messages)
                 {
+                    var conversation = _conversations.Get(item.ConversationId, item.ConversationTopic);
                     <button type="button"
                             class="message-row @(_detail?.Id == item.Id ? "selected" : null) @(item.IsRead ? null : "unread")"
                             @key="item.Id"
@@ -127,6 +132,19 @@
                             <span class="row-date">@FormatShortDate(item.ReceivedAt)</span>
                         </span>
                         <span class="row-line-2">
+                            @if (conversation.IsThread)
+                            {
+                                @* A conversation is recognisable at a glance and without colour alone: an icon
+                                   plus the message count, spelled out for screen readers (and in the tooltip,
+                                   together with the people in it). *@
+                                <span class="thread-chip" title="@ThreadChipTitle(conversation)">
+                                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true" focusable="false">
+                                        <path d="M3.6 3h8.8a1 1 0 0 1 1 1v4.9a1 1 0 0 1-1 1H7.5L5 12.1V9.9H3.6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                                    </svg>
+                                    <span class="thread-chip-count">@conversation.MessageCount</span>
+                                    <span class="sr-only">messages in this conversation</span>
+                                </span>
+                            }
                             <span class="row-subject">@(string.IsNullOrWhiteSpace(item.Subject) ? "(no subject)" : item.Subject)</span>
                             @if (item.Importance == EmailImportance.High)
                             {
@@ -134,7 +152,7 @@
                             }
                         </span>
                         <span class="row-line-3">
-                            <span class="row-meta">@RowAddresses(item)</span>
+                            <span class="row-meta">@RowMeta(item, conversation)</span>
                             @if (item.HasAttachments)
                             {
                                 <span class="attach-mark" title="Has attachments" aria-hidden="true">📎</span>
@@ -152,13 +170,15 @@
             <button type="button" class="icon-btn mobile-only" @onclick="ShowList" title="Back to messages" aria-label="Back to messages">‹</button>
             <h1 class="detail-subject">@(subject)</h1>
             <span class="pane-toolbar-spacer"></span>
-            @if (_detail is not null && !string.IsNullOrEmpty(_detail.ConversationId))
+            @if (ShowsConversation)
             {
                 <button type="button"
                         class="mini-btn @(_threadView ? "mini-active" : null)"
                         disabled="@_threadLoading"
+                        aria-pressed="@(_threadView ? "true" : "false")"
+                        title="@ConversationToggleTitle"
                         @onclick="ToggleThreadAsync">
-                    @(_threadView ? "Show message" : "Conversation")
+                    @(_threadView ? "Hide conversation" : "Conversation")
                 </button>
             }
         </div>
@@ -187,17 +207,27 @@
             {
                 @if (_threadView)
                 {
-                    @* Conversation timeline (chronological, as returned by the API). *@
+                    var conversation = LoadedThreadConversation;
+                    @* Conversation timeline: the whole conversation in chronological order, the same
+                       conversation state the list badge and the AI panel read. Every entry carries who
+                       sent it, when and what it says, so the conversation is understandable without
+                       opening each message; the entry that is open below is marked as such. *@
                     <section class="thread-block" aria-label="Conversation">
                         <div class="thread-head">
-                            <div class="thread-topic">@(_thread?.Topic ?? (_detail.ConversationTopic ?? "Conversation"))</div>
-                            @if (_thread is not null)
+                            <div class="thread-headline">
+                                <span class="thread-topic">@(_thread?.Topic ?? (_detail.ConversationTopic ?? "Conversation"))</span>
+                                @if (conversation is { IsKnown: true })
+                                {
+                                    <span class="thread-count">@conversation.MessageCount @(conversation.MessageCount == 1 ? "message" : "messages")</span>
+                                }
+                                <span class="pane-toolbar-spacer"></span>
+                                <button type="button" class="mini-btn" title="Reload conversation" aria-label="Reload conversation"
+                                        disabled="@_threadLoading" @onclick="ReloadThreadAsync">↻</button>
+                            </div>
+                            @if (conversation is { Participants.Count: > 0 })
                             {
-                                <span class="thread-count">@_thread.TotalCount @(_thread.TotalCount == 1 ? "message" : "messages")</span>
+                                <span class="thread-people">@JoinDisplayNames(conversation.Participants, string.Empty)</span>
                             }
-                            <span class="pane-toolbar-spacer"></span>
-                            <button type="button" class="mini-btn" title="Reload conversation" aria-label="Reload conversation"
-                                    disabled="@_threadLoading" @onclick="ReloadThreadAsync">↻</button>
                         </div>
 
                         @if (_threadLoading)
@@ -215,18 +245,34 @@
                         else if (_thread is not null && _thread.Messages.Count > 0)
                         {
                             <ol class="thread-list">
-                                @foreach (var threadItem in _thread.Messages)
+                                @for (var index = 0; index < _thread.Messages.Count; index++)
                                 {
+                                    var threadItem = _thread.Messages[index];
                                     var depth = Math.Clamp(threadItem.Depth, 0, 6);
-                                    <li class="thread-row depth-@depth @(_detail.Id == threadItem.Id ? "current" : null)" @key="threadItem.Id">
-                                        <button type="button" class="thread-row-button" @onclick="() => OpenThreadItemAsync(threadItem)">
+                                    var isOpen = _detail.Id == threadItem.Id;
+                                    var isLatest = index == _thread.Messages.Count - 1;
+                                    <li class="thread-row depth-@depth @(isOpen ? "current" : null) @(isLatest ? "latest" : null)" @key="threadItem.Id">
+                                        <button type="button" class="thread-row-button"
+                                                aria-current="@(isOpen ? "true" : null)"
+                                                title="@(isOpen ? "This message is open below" : $"Open {DisplayName(threadItem.From)}'s message")"
+                                                @onclick="() => OpenThreadItemAsync(threadItem)">
                                             <span class="avatar avatar-sm" aria-hidden="true">@Initials(threadItem.From)</span>
                                             <span class="thread-main">
                                                 <span class="row-line-1">
-                                                    <span class="thread-name">@DisplayName(threadItem.From)</span>
+                                                    <span class="thread-who">
+                                                        <span class="thread-name">@DisplayName(threadItem.From)</span>
+                                                        @if (isLatest)
+                                                        {
+                                                            <span class="thread-latest">Latest</span>
+                                                        }
+                                                    </span>
                                                     <span class="row-date">@FormatDateTime(threadItem.ReceivedAt)</span>
                                                 </span>
                                                 <span class="row-subject">@(string.IsNullOrWhiteSpace(threadItem.Subject) ? "(no subject)" : threadItem.Subject)</span>
+                                                @if (!string.IsNullOrWhiteSpace(threadItem.Preview))
+                                                {
+                                                    <span class="thread-preview">@threadItem.Preview</span>
+                                                }
                                             </span>
                                         </button>
                                     </li>
@@ -330,8 +376,14 @@
                             <button type="button" class="ai-btn" title="Summarize this message"
                                     disabled="@AiActionsDisabled"
                                     @onclick="() => RunAiAsync(AiTask.SummarizeMessage)">Summarize</button>
-                            <button type="button" class="ai-btn" title="Summarize the whole conversation"
-                                    disabled="@AiActionsDisabled || string.IsNullOrEmpty(_detail.ConversationId)"
+                            @* Offered for a real conversation only. The SAME ConversationSummary that drives
+                               the list badge and the reading pane decides it - never a subject, never the
+                               mere presence of a conversation id, and never a raw attribute value that
+                               silently disables the button (the previous expression was swallowed by
+                               Razor's implicit-expression rules and rendered as the literal text
+                               "False || string.IsNullOrEmpty(...)", i.e. permanently disabled). *@
+                            <button type="button" class="ai-btn" title="@SummarizeThreadTitle"
+                                    disabled="@(AiActionsDisabled || !CanSummarizeThread)"
                                     @onclick="() => RunAiAsync(AiTask.SummarizeThread)">Summarize thread</button>
                             <button type="button" class="ai-btn" title="Ask how to answer this message"
                                     disabled="@AiActionsDisabled"
@@ -535,6 +587,20 @@
     /// </summary>
     private int _childrenVersion;
 
+    /// <summary>
+    /// The conversation state of the listed rows and of the open message: the one place the message
+    /// list badge, the reading pane's conversation view and the availability of "Summarize thread"
+    /// read from, so they can never disagree about what a thread is.
+    /// </summary>
+    private readonly ConversationIndex _conversations = new();
+
+    /// <summary>
+    /// Guards the conversation lookups: an answer that arrives after the mailbox changed (or after the
+    /// circuit went away) is ignored instead of decorating the new mailbox with the old one's
+    /// conversations.
+    /// </summary>
+    private int _conversationVersion;
+
     private FolderInfo _folder = FolderCatalog.Inbox;
     private IReadOnlyList<MessageSummary> _messages = [];
     private int _offset;
@@ -591,6 +657,50 @@
     private bool _disposed;
 
     private bool AiActionsDisabled => _aiBusy || _detail is null || _aiReadiness is { Ready: false };
+
+    /// <summary>
+    /// The conversation state of the open message: what Exchange reported, or the not-yet-read state
+    /// that still carries the conversation's identity. Null while no message is open.
+    /// </summary>
+    private ConversationSummary? OpenConversation =>
+        _detail is null
+            ? null
+            : _conversations.Get(_detail.ConversationId, _detail.ConversationTopic);
+
+    /// <summary>The conversation the timeline is showing: the loaded thread, otherwise the open message's state.</summary>
+    private ConversationSummary? LoadedThreadConversation => _thread?.Conversation ?? OpenConversation;
+
+    /// <summary>
+    /// "Summarize thread" is available only when Exchange reports more than one message in the open
+    /// message's conversation - an original and at least one reply. A standalone message and a
+    /// conversation of one are equally not a thread, and an unread state is never guessed.
+    /// </summary>
+    private bool CanSummarizeThread => OpenConversation is { IsThread: true };
+
+    /// <summary>
+    /// True while the reading pane offers the conversation at all: Exchange confirmed a conversation
+    /// with more than one message, or the state is still unknown for a message that carries a
+    /// conversation id - a conversation is never hidden merely because the lookup has not answered.
+    /// </summary>
+    private bool ShowsConversation =>
+        OpenConversation is { IsThread: true } or { IsKnown: false, HasConversation: true };
+
+    /// <summary>Why "Summarize thread" is (not) available - shown as the button's tooltip.</summary>
+    private string SummarizeThreadTitle => OpenConversation switch
+    {
+        { IsThread: true, MessageCount: { } count } => $"Summarize the whole conversation ({count} messages).",
+        { IsKnown: true } => "This message is not part of a conversation with replies.",
+        { HasConversation: true } => "Checking whether this message belongs to a conversation…",
+        _ => "This message is not part of a conversation.",
+    };
+
+    /// <summary>What the conversation toggle will do - shown as its tooltip.</summary>
+    private string ConversationToggleTitle => OpenConversation switch
+    {
+        { IsThread: true, MessageCount: { } count } when !_threadView => $"Show the whole conversation ({count} messages).",
+        { IsThread: true } => "Hide the conversation and read only this message.",
+        _ => "Show the conversation this message belongs to.",
+    };
 
     /// <summary>"rtl"/"ltr" for the AI result: driven by the selected response language.</summary>
     private string _aiDirection =>
@@ -650,6 +760,11 @@
             // Cheap, local check (no provider request) so the AI section can say what is
             // missing BEFORE the user tries to use it.
             await RefreshAiReadinessAsync();
+
+            // The conversation state of the listed rows is read AFTER the list is on screen: the first
+            // paint stays exactly one Exchange query (spec 11), and the rows simply gain their
+            // conversation badge (and with it "Summarize thread") a moment later.
+            _ = InvokeAsync(DecorateConversationsAsync);
         }
     }
 
@@ -698,10 +813,13 @@
 
             if (change.Area is AppStatusArea.Exchange or AppStatusArea.All)
             {
-                // A different mailbox holds different folders: forget the discovered hierarchy, and
-                // never keep showing a custom folder that may not exist in the new mailbox.
+                // A different mailbox holds different folders and different conversations: forget the
+                // discovered hierarchy and the conversation state, and never keep showing a custom
+                // folder - or a thread - that may not exist in the new mailbox.
                 _childrenVersion++;
                 _sidebar.Reset();
+                _conversationVersion++;
+                _conversations.Reset();
 
                 if (_folder.WellKnownType == MailFolderTypes.Custom)
                 {
@@ -930,6 +1048,14 @@
                 }
 
                 ApplyPage(page);
+
+                // The page is on screen: ask Exchange what its conversations are. Never before the
+                // list paints, so a folder switch or a page never waits for conversation state.
+                if (RendererInfo.IsInteractive)
+                {
+                    _ = InvokeAsync(DecorateConversationsAsync);
+                }
+
                 return;
             }
             catch (EmailApiException ex) when (version == _listVersion)
@@ -1106,6 +1232,17 @@
                 _detailLoading = false;
             }
         }
+
+        if (version != _detailVersion || _detail is null)
+        {
+            // Superseded by a newer open, or the message could not be loaded: nothing to decorate.
+            return;
+        }
+
+        // The conversation state is resolved as soon as a message is open - it is what makes the list
+        // badge, the reading pane and "Summarize thread" agree, so the user never has to ask first.
+        await EnsureConversationKnownAsync();
+        await ShowConversationContextAsync();
     }
 
     private async Task OpenThreadItemAsync(ThreadMessage threadItem)
@@ -1190,6 +1327,116 @@
         }
     }
 
+    /// <summary>
+    /// Learns the conversation state of the open message when it is not known yet, so the list badge,
+    /// the reading pane and "Summarize thread" all rest on what Exchange actually reports. One
+    /// conversation is one cheap lookup, and a message Exchange keeps outside a conversation is never
+    /// asked about. A failed lookup leaves the state unknown - the UI then claims nothing - instead of
+    /// guessing a thread from the subject.
+    /// </summary>
+    private async Task EnsureConversationKnownAsync()
+    {
+        if (_detail is not { } detail || string.IsNullOrWhiteSpace(detail.ConversationId))
+        {
+            return;
+        }
+
+        // Already answered for this conversation (usually by the list decoration): no Exchange call.
+        if (_conversations.TryGet(detail.ConversationId) is not null)
+        {
+            return;
+        }
+
+        var version = _conversationVersion;
+
+        try
+        {
+            var summaries = await Api.GetConversationSummariesAsync(
+                [detail.ConversationId], CancellationToken.None);
+
+            if (version != _conversationVersion || _disposed)
+            {
+                return;
+            }
+
+            _conversations.Apply(summaries);
+        }
+        catch (OperationCanceledException)
+        {
+            // The circuit is going away.
+        }
+        catch (Exception)
+        {
+            // Nothing is claimed about a conversation that could not be checked: the reading pane keeps
+            // offering it and the AI button keeps saying that it is still checking.
+        }
+    }
+
+    /// <summary>
+    /// Shows the conversation of the open message when Exchange confirmed it is one, so opening a
+    /// threaded message immediately shows the conversation it belongs to. A standalone message never
+    /// gets a conversation view, and moving between messages of the same conversation keeps the
+    /// timeline that is already loaded (it is the same conversation).
+    /// </summary>
+    private async Task ShowConversationContextAsync()
+    {
+        if (_detail is null || OpenConversation is not { IsThread: true })
+        {
+            _threadView = false;
+            return;
+        }
+
+        _threadView = true;
+
+        if (_thread is null ||
+            !string.Equals(_thread.ConversationId, _detail.ConversationId, StringComparison.Ordinal))
+        {
+            await ReloadThreadAsync();
+        }
+    }
+
+    /// <summary>
+    /// Decorates the listed rows with what Exchange reports about their conversations - the badge, the
+    /// message count and the people. It runs after the list is on screen (never during the first paint,
+    /// which stays exactly one Exchange query - spec 11) and asks only for the conversations it does not
+    /// know yet. A failure is silent: a row without a badge is a row the application claims nothing
+    /// about, never a broken list.
+    /// </summary>
+    private async Task DecorateConversationsAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var missing = _conversations.MissingIds(_messages);
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        var version = _conversationVersion;
+
+        try
+        {
+            var summaries = await Api.GetConversationSummariesAsync(missing, CancellationToken.None);
+            if (version != _conversationVersion || _disposed)
+            {
+                return;
+            }
+
+            _conversations.Apply(summaries);
+        }
+        catch (OperationCanceledException)
+        {
+            // The circuit is going away.
+        }
+        catch (Exception)
+        {
+            // The badges simply stay away; reading and replying are unaffected.
+        }
+    }
+
     private async Task SendReplyAsync()
     {
         if (_detail is null || string.IsNullOrWhiteSpace(_replyBody))
@@ -1250,6 +1497,14 @@
     private async Task RunAiAsync(AiTask task)
     {
         if (_detail is null || _aiBusy)
+        {
+            return;
+        }
+
+        // The same rule the button renders from: a conversation summary of a message Exchange reports
+        // outside a conversation - or in a conversation of one - can never be started, however the
+        // request reached this method.
+        if (task == AiTask.SummarizeThread && !CanSummarizeThread)
         {
             return;
         }
@@ -1414,6 +1669,7 @@
     {
         _disposed = true;
         StatusNotifier.Changed -= OnAppStatusChanged;
+        _conversationVersion++;
         _aiVersion++;
         _aiCts?.Cancel();
         _aiCts?.Dispose();
@@ -1429,6 +1685,29 @@
         => _folder.ShowsRecipients
             ? JoinFormatted(item.To)
             : (item.From?.Address ?? string.Empty);
+
+    /// <summary>
+    /// The third line of a list row: the people in the conversation for a message that belongs to one,
+    /// otherwise exactly what the folder showed before (the sender's address, or the recipients in
+    /// Sent/Drafts).
+    /// </summary>
+    private string RowMeta(MessageSummary item, ConversationSummary conversation)
+        => conversation.IsThread && conversation.Participants.Count > 0
+            ? JoinDisplayNames(conversation.Participants, RowAddresses(item))
+            : RowAddresses(item);
+
+    /// <summary>Tooltip of a conversation badge: who the conversation is with and how many messages it holds.</summary>
+    private static string ThreadChipTitle(ConversationSummary conversation)
+    {
+        var count = conversation.MessageCount is { } messages
+            ? $"{messages} {(messages == 1 ? "message" : "messages")}"
+            : "conversation";
+        var people = JoinDisplayNames(conversation.Participants, string.Empty);
+
+        return people.Length == 0
+            ? $"Conversation · {count}"
+            : $"Conversation with {people} · {count}";
+    }
 
     private static string DisplayName(EmailAddress? address)
     {

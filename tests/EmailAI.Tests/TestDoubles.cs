@@ -280,12 +280,26 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
     private readonly Dictionary<string, List<MessageSummary>> _folders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EmailMessage> _messages = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<MailFolder>> _childFolders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ConversationSummary> _conversations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MessageThread> _threads = new(StringComparer.Ordinal);
 
     /// <summary>Number of list queries served (lets tests assert on polling behaviour).</summary>
     public int ListCalls { get; private set; }
 
     /// <summary>Number of child-folder queries served (lets tests assert on lazy discovery).</summary>
     public int FolderListCalls { get; private set; }
+
+    /// <summary>Number of conversation queries served (lets tests assert on lazy conversation state).</summary>
+    public int ConversationLookupCalls { get; private set; }
+
+    /// <summary>Every conversation-id set requested, in call order.</summary>
+    public List<IReadOnlyList<string>> RequestedConversations { get; } = [];
+
+    /// <summary>
+    /// When set, the NEXT conversation query fails with this typed Exchange error instead of answering
+    /// (used for "the conversation state could not be read").
+    /// </summary>
+    public ExchangeMailErrorKind? FailNextConversationLookupKind { get; set; }
 
     /// <summary>Every parent key whose child folders were requested, in call order.</summary>
     public List<string> RequestedFolderParents { get; } = [];
@@ -323,7 +337,9 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
         DateTimeOffset receivedAt,
         string? subject = "New message",
         string? fromName = "Sara",
-        string? fromAddress = "sara@example.com")
+        string? fromAddress = "sara@example.com",
+        string? conversationId = null,
+        string? conversationTopic = null)
     {
         var summary = new MessageSummary
         {
@@ -331,6 +347,8 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
             Subject = subject,
             From = new EmailAddress(fromName, fromAddress),
             ReceivedAt = receivedAt,
+            ConversationId = conversationId,
+            ConversationTopic = conversationTopic ?? subject,
         };
 
         if (!_folders.TryGetValue(folderKey, out var list))
@@ -345,6 +363,72 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
 
     /// <summary>Arranges the full message returned by <see cref="GetMessageAsync"/>.</summary>
     public void ArrangeMessage(EmailMessage message) => _messages[message.Id] = message;
+
+    /// <summary>
+    /// Arranges what Exchange reports for a conversation: how many messages it holds and who is in it.
+    /// A conversation that is not arranged is unknown - exactly like one Exchange no longer holds.
+    /// </summary>
+    public void ArrangeConversation(
+        string conversationId,
+        int messageCount,
+        params EmailAddress[] participants)
+        => _conversations[conversationId] = new ConversationSummary(
+            conversationId,
+            "Fake conversation",
+            messageCount,
+            participants);
+
+    /// <summary>Arranges the conversation <see cref="GetThreadAsync"/> answers for one message.</summary>
+    public void ArrangeThread(MessageThread thread, params string[] itemIds)
+    {
+        foreach (var itemId in itemIds)
+        {
+            _threads[itemId] = thread;
+        }
+    }
+
+    /// <summary>Builds a conversation of the given messages (oldest first), as GetThread returns them.</summary>
+    public static MessageThread Thread(
+        string conversationId,
+        string topic,
+        params MessageSummary[] chronological)
+        => new()
+        {
+            ConversationId = conversationId,
+            Topic = topic,
+            TotalCount = chronological.Length,
+            FocusMessageId = chronological.LastOrDefault()?.Id,
+            Messages = [.. chronological.Select((message, index) => new ThreadMessage
+            {
+                Id = message.Id,
+                Subject = message.Subject,
+                From = message.From,
+                To = message.To,
+                ReceivedAt = message.ReceivedAt,
+                IsRead = message.IsRead,
+                HasAttachments = message.HasAttachments,
+                Importance = message.Importance,
+                ConversationId = conversationId,
+                ConversationTopic = topic,
+                Depth = index,
+                ParentId = index == 0 ? null : chronological[index - 1].Id,
+                Preview = "Preview of " + (message.Subject ?? "the message"),
+            })],
+        };
+
+    /// <summary>A standalone message (or one of a conversation of one) as Exchange returns it.</summary>
+    public static MessageSummary Message(
+        string id,
+        string subject,
+        string fromName = "Sara Ahmadi",
+        string fromAddress = "sara@example.com")
+        => new()
+        {
+            Id = id,
+            Subject = subject,
+            From = new EmailAddress(fromName, fromAddress),
+            ConversationId = null,
+        };
 
     /// <summary>
     /// Arranges the folders nested directly below a parent key, exactly like Exchange reports them
@@ -443,15 +527,41 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
             ? Task.FromResult(message)
             : Task.FromException<EmailMessage>(
                 new InvalidOperationException($"No fake message '{itemId}' is arranged."));
+    /// <summary>
+    /// The conversation arranged for a message, or the same empty conversation the fake has always
+    /// answered with (which the AI endpoint tests rely on for "the conversation is empty").
+    /// </summary>
     public Task<MessageThread> GetThreadAsync(string itemId, CancellationToken cancellationToken)
-        => Task.FromResult(new MessageThread
+        => Task.FromResult(_threads.TryGetValue(itemId, out var thread)
+            ? thread
+            : new MessageThread
+            {
+                ConversationId = "fake-conversation",
+                Topic = "Fake conversation",
+                TotalCount = 0,
+                FocusMessageId = itemId,
+                Messages = [],
+            });
+
+    public Task<IReadOnlyList<ConversationSummary>> GetConversationSummariesAsync(
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken)
+    {
+        ConversationLookupCalls++;
+        RequestedConversations.Add(conversationIds);
+
+        if (FailNextConversationLookupKind is { } kind)
         {
-            ConversationId = "fake-conversation",
-            Topic = "Fake conversation",
-            TotalCount = 0,
-            FocusMessageId = itemId,
-            Messages = [],
-        });
+            FailNextConversationLookupKind = null;
+            throw new ExchangeMailException(kind, "Injected typed Exchange failure (test double).");
+        }
+
+        // Only arranged conversations are reported, exactly like Exchange omitting one it does not
+        // hold: a test can therefore pin "unknown means no badge - and never a thread".
+        return Task.FromResult<IReadOnlyList<ConversationSummary>>([.. conversationIds
+            .Where(id => _conversations.ContainsKey(id))
+            .Select(id => _conversations[id])]);
+    }
 
     public Task<ReplyResult> ReplyAsync(string itemId, ReplyDraft draft, CancellationToken cancellationToken)
         => throw new NotSupportedException("FakeExchangeMailService never sends mail.");

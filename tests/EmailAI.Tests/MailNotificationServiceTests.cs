@@ -188,6 +188,11 @@ public sealed class MailNotificationServiceTests
         public Task<MessageThread> GetThreadAsync(string itemId, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public Task<IReadOnlyList<EmailAI.Domain.Mail.ConversationSummary>> GetConversationSummariesAsync(
+            IReadOnlyList<string> conversationIds,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public Task<ReplyResult> ReplyAsync(string itemId, ReplyDraft draft, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 

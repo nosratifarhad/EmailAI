@@ -282,14 +282,16 @@ button.health-chip:hover {
     gap: 2px;
 }
 
-/* The expand/collapse arrow. It is a control of its own: expanding a folder must never select it,
-   and selecting a folder must never expand something the user did not ask for. */
+/* The expand/collapse chevron. It is a control of its own: expanding a folder must never select it,
+   and selecting a folder must never expand something the user did not ask for. It is a real button
+   with a comfortably sized icon, a hover state and a visible focus ring: the 11px text glyph it
+   replaced was easy to miss and fiddly to hit. */
 .folder-toggle {
-    flex: 0 0 22px;
+    flex: 0 0 26px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
+    width: 26px;
     min-height: 30px;
     padding: 0;
     border: 0;
@@ -297,15 +299,38 @@ button.health-chip:hover {
     background: transparent;
     color: #5f6368;
     cursor: pointer;
-    font-size: 11px;
     line-height: 1;
 }
 
 .folder-toggle:hover {
     background: #e8ecf3;
+    color: #1c1e21;
 }
 
-/* A folder with no children keeps the label aligned with the folders that have an arrow. */
+.folder-toggle:focus-visible {
+    outline: 2px solid #0b57d0;
+    outline-offset: 1px;
+}
+
+/* The chevron points right while the folder is collapsed and down while it is expanded. */
+.folder-caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    transition: transform 120ms ease;
+}
+
+.folder-caret svg {
+    display: block;
+}
+
+.folder-caret.is-expanded {
+    transform: rotate(90deg);
+}
+
+/* A folder with no children keeps the label aligned with the folders that have a chevron. */
 .folder-toggle-empty {
     cursor: default;
 }
@@ -431,6 +456,41 @@ button.health-chip:hover {
     font-weight: 700;
     font-size: 11px;
     padding: 0 5px;
+}
+
+/* ---------- Conversation (thread) indicators ---------- */
+
+/* The badge that marks a message as part of a conversation, with the number of messages in it.
+   Deliberately small and tinted rather than loud: every row stays a row, no cards. */
+.thread-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px 1px 5px;
+    border-radius: 999px;
+    background: #eef3fd;
+    color: #0b3f91;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.thread-chip svg {
+    display: block;
+}
+
+/* Text for screen readers only (used where an icon carries meaning). */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 /* ---------- States: loading / empty / banners ---------- */
@@ -819,11 +879,28 @@ button.health-chip:hover {
 
 .thread-head {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 2px;
     padding: 10px 14px;
     border-bottom: 1px solid #eceef1;
     background: #fafbfc;
+}
+
+/* Topic, message count and the reload control on one line. */
+.thread-headline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* Who the conversation is with. */
+.thread-people {
+    font-size: 12px;
+    color: #70777f;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .thread-topic {
@@ -893,6 +970,36 @@ button.health-chip:hover {
 .thread-name {
     font-weight: 600;
     font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Sender and the "Latest" marker stay together on the left, the timestamp on the right. */
+.thread-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* The newest message of the conversation, so the reader knows where the story ends. */
+.thread-latest {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #0b57d0;
+    background: #e8f0fe;
+    border-radius: 4px;
+    padding: 0 4px;
+}
+
+/* What the message says, from Exchange's own body preview - no body load. */
+.thread-preview {
+    font-size: 12px;
+    color: #70777f;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

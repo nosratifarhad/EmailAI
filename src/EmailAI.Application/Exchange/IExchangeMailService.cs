@@ -33,6 +33,17 @@ public interface IExchangeMailService
         string parentKey,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads the conversation state (message count + participants) of the given conversations. The
+    /// whole set is read in ONE Exchange round trip, and only what Exchange reports is returned: a
+    /// conversation it no longer knows is omitted rather than invented. An empty request makes no
+    /// Exchange call at all. Identity is Exchange's conversation id - never a subject or a "RE:"
+    /// prefix - so a reply is a thread regardless of how its subject was edited.
+    /// </summary>
+    Task<IReadOnlyList<ConversationSummary>> GetConversationSummariesAsync(
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken);
+
     /// <summary>Loads a single full message (bodies + recipient lists + attachments metadata).</summary>
     Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken);
 

@@ -39,6 +39,7 @@ Every specification uses the same headings so a change can be reviewed the same 
 | 14 | [Testing strategy](14-testing-strategy.md) | Unit, host, integration, packaging, secret scan |
 | 15 | [Release and distribution](15-release-distribution.md) | Versioning, packaging, artifact, release assets |
 | 16 | [Mail folders and custom folder navigation](16-mail-folders.md) | Folder hierarchy, custom folder discovery, folder selection, message retrieval |
+| 17 | [Conversations and threads](17-conversations-and-threads.md) | Conversation identity, thread detection, list badges, conversation timeline, thread-summarize availability |
 
 Rules for keeping these documents honest:
 
