@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>EmailAI.Api</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EmailAI.Application\EmailAI.Application.csproj" />
+    <ProjectReference Include="..\EmailAI.Domain\EmailAI.Domain.csproj" />
+    <ProjectReference Include="..\EmailAI.Infrastructure\EmailAI.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

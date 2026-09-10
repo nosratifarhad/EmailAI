@@ -1,0 +1,32 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+artifacts/
+
+# Node / Vite (added in later phases)
+node_modules/
+dist/
+*.local
+
+# Secrets & local config - NEVER commit credentials
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+
+# IDE
+.idea/
+*.swp
+
+# EmailAI Electron desktop packaging
+desktop/node_modules/
+desktop/dist/
+desktop/aspnet-publish/
+desktop/*.log
+
+# OS
+Thumbs.db
+.DS_Store

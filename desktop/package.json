@@ -1,0 +1,62 @@
+{
+  "name": "emailai-desktop",
+  "productName": "EmailAI",
+  "version": "1.0.1",
+  "description": "Windows desktop shell for the EmailAI ASP.NET Core + Blazor application. Electron starts the bundled self-contained EmailAI.Api backend locally and loads its UI.",
+  "author": "EmailAI",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "release": "node scripts/release.js",
+    "test": "dotnet test \"../tests/EmailAI.Tests\" -c Release",
+    "build:server": "dotnet build \"../EmailAI.slnx\" -c Release",
+    "publish:server": "dotnet publish \"../src/EmailAI.Api\" -c Release -r win-x64 --self-contained true -o \"aspnet-publish\" -p:DebugType=None",
+    "verify:secrets": "node scripts/verify-secrets.js aspnet-publish",
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.emailai.desktop",
+    "productName": "EmailAI",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "aspnet-publish",
+        "to": "server"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EmailAI",
+      "runAfterFinish": false,
+      "artifactName": "EmailAI-Setup-${version}.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
+  }
+}

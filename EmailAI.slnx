@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EmailAI.Api/EmailAI.Api.csproj" />
+    <Project Path="src/EmailAI.Application/EmailAI.Application.csproj" />
+    <Project Path="src/EmailAI.Domain/EmailAI.Domain.csproj" />
+    <Project Path="src/EmailAI.Infrastructure/EmailAI.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EmailAI.Tests/EmailAI.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/EwsApiProbe/EwsApiProbe.csproj" />
+  </Folder>
+</Solution>

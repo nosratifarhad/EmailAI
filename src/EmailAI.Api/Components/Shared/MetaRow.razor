@@ -1,0 +1,12 @@
+@* Definition-list row used in the message metadata block. *@
+
+<dt>@Label</dt>
+<dd>@(string.IsNullOrEmpty(Value) ? "—" : Value)</dd>
+
+@code {
+    [Parameter]
+    public string Label { get; set; } = string.Empty;
+
+    [Parameter]
+    public string Value { get; set; } = string.Empty;
+}

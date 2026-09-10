@@ -1,0 +1,29 @@
+@page "/Error"
+@using System.Diagnostics
+@layout MainLayout
+
+<h1>Something went wrong</h1>
+
+<p>An unhandled error occurred while processing your request. The technical details have been
+    logged on the server - please retry, and if the problem persists report the request id below.</p>
+
+@if (ShowRequestId)
+{
+    <p class="request-id">
+        <strong>Request id:</strong> <code>@RequestId</code>
+    </p>
+}
+
+<p><a href="/">Back to EmailAI</a></p>
+
+@code {
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string? RequestId { get; set; }
+
+    private bool ShowRequestId => !string.IsNullOrEmpty(RequestId);
+
+    protected override void OnInitialized() =>
+        RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

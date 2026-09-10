@@ -1,0 +1,272 @@
+@rendermode InteractiveServer
+@implements IDisposable
+
+@* Small always-visible status strip in the header. Polls /health, /health/exchange
+   and /health/ai so the user can see whether the app, Exchange and the AI provider
+   provider are OK without opening developer tools. *@
+
+<div class="health-status" role="status" aria-live="polite">
+    <span class="health-chip" title="@_appTitle">
+        <span class="dot @_appClass"></span>
+        <span class="health-chip-text">App</span>
+    </span>
+    <button class="health-chip health-chip-button" title="@_exchangeTitle" @onclick="CheckNowAsync">
+        <span class="dot @_exchangeClass"></span>
+        <span class="health-chip-text">@_exchangeLabel</span>
+    </button>
+    <button class="health-chip health-chip-button" title="@_aiTitle" @onclick="CheckNowAsync">
+        <span class="dot @_aiClass"></span>
+        <span class="health-chip-text">@_aiLabel</span>
+    </button>
+</div>
+
+@code {
+    [Inject]
+    private EmailApiClient Api { get; set; } = default!;
+
+    /// <summary>
+    /// Raised when AI/Exchange settings change anywhere in the application, so the chips update
+    /// immediately instead of waiting for the next 20-second poll.
+    /// </summary>
+    [Inject]
+    private AppStatusNotifier StatusNotifier { get; set; } = default!;
+
+    private string _appClass = "dot-idle";
+    private string _appTitle = "Application status: checking...";
+    private string _exchangeClass = "dot-idle";
+    private string _exchangeLabel = "Exchange: checking";
+    private string _exchangeTitle = "Exchange status: checking...";
+    private string _aiClass = "dot-idle";
+    private string _aiLabel = "AI: checking";
+    private string _aiTitle = "AI status: checking...";
+    private bool _disposed;
+    private CancellationTokenSource? _cts;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _cts = new CancellationTokenSource();
+            StatusNotifier.Changed += OnStatusChanged;
+            await CheckNowAsync();
+            _ = PollLoopAsync(_cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// A configuration change made in Settings arrives here: the chips say "checking" and the
+    /// health endpoints are queried again right away.
+    /// </summary>
+    private void OnStatusChanged(AppStatusChange change)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            BeginChecking();
+            await CheckNowAsync();
+        });
+    }
+
+    private void BeginChecking()
+    {
+        _appClass = "dot-idle";
+        _appTitle = "Application status: checking...";
+        _exchangeClass = "dot-idle";
+        _exchangeLabel = "Exchange: checking";
+        _exchangeTitle = "Exchange status: checking...";
+        _aiClass = "dot-idle";
+        _aiLabel = "AI: checking";
+        _aiTitle = "AI status: checking...";
+        StateHasChanged();
+    }
+
+    private async Task PollLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+                await CheckNowAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Component disposed - stop polling.
+        }
+    }
+
+    private async Task CheckNowAsync()
+    {
+        await CheckAppAsync();
+        await CheckExchangeAsync();
+        await CheckAiAsync();
+    }
+
+    private async Task CheckAppAsync()
+    {
+        try
+        {
+            var health = await Api.GetServiceHealthAsync(CancellationToken.None);
+            if (string.Equals(health.Status, "healthy", StringComparison.OrdinalIgnoreCase))
+            {
+                _appClass = "dot-ok";
+                _appTitle = "Application is healthy.";
+            }
+            else
+            {
+                _appClass = "dot-bad";
+                _appTitle = $"Unexpected application status: {health.Status ?? "unknown"}.";
+            }
+        }
+        catch (EmailApiException ex)
+        {
+            _appClass = "dot-bad";
+            _appTitle = ex.Message;
+        }
+        catch (HttpRequestException)
+        {
+            _appClass = "dot-bad";
+            _appTitle = "Cannot reach the application.";
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignored - shutting down.
+        }
+        catch
+        {
+            _appClass = "dot-bad";
+            _appTitle = "Application status is unknown.";
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CheckExchangeAsync()
+    {
+        try
+        {
+            var health = await Api.GetExchangeHealthAsync(CancellationToken.None);
+            if (string.Equals(health.Status, "healthy", StringComparison.OrdinalIgnoreCase))
+            {
+                _exchangeClass = "dot-ok";
+                _exchangeLabel = "Exchange connected";
+                _exchangeTitle = health.LatencyMs is { } ms
+                    ? $"Exchange is reachable (probe took {ms} ms)."
+                    : "Exchange is reachable.";
+            }
+            else
+            {
+                _exchangeClass = "dot-warn";
+                _exchangeLabel = "Exchange unavailable";
+                _exchangeTitle = health.Error ?? "Exchange is not available.";
+            }
+        }
+        catch (EmailApiException ex)
+        {
+            _exchangeClass = "dot-warn";
+            _exchangeLabel = Categorise(ex.ErrorCode);
+            _exchangeTitle = ex.Message;
+        }
+        catch (HttpRequestException)
+        {
+            _exchangeClass = "dot-bad";
+            _exchangeLabel = "Exchange: network error";
+            _exchangeTitle = "Cannot reach the Exchange health endpoint.";
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignored - shutting down.
+        }
+        catch
+        {
+            _exchangeClass = "dot-bad";
+            _exchangeLabel = "Exchange: unknown";
+            _exchangeTitle = "Exchange status is unknown.";
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CheckAiAsync()
+    {
+        try
+        {
+            var health = await Api.GetAiHealthAsync(CancellationToken.None);
+            switch (health.Status)
+            {
+                case "connected":
+                    _aiClass = "dot-ok";
+                    _aiLabel = "AI connected";
+                    _aiTitle = health.LatencyMs is { } ms
+                        ? $"The AI provider is reachable (probe took {ms} ms)."
+                        : "The AI provider is reachable.";
+                    break;
+                case "not_configured":
+                    _aiClass = "dot-warn";
+                    _aiLabel = "AI: not configured";
+                    // The endpoint distinguishes "no provider configured" from "provider
+                    // configured but no per-user API key yet", so surface its guidance.
+                    _aiTitle = health.Error ?? "AI is not configured. Open Settings to configure the AI provider.";
+                    break;
+                case "authentication_failed":
+                    _aiClass = "dot-bad";
+                    _aiLabel = "AI: auth failed";
+                    _aiTitle = health.Error ?? "The AI provider rejected the connection. Check the configured API key.";
+                    break;
+
+                default:
+                    _aiClass = "dot-bad";
+                    _aiLabel = "AI unavailable";
+                    _aiTitle = health.Error ?? "The AI provider is not available.";
+                    break;
+            }
+        }
+        catch (EmailApiException ex)
+        {
+            _aiClass = "dot-bad";
+            _aiLabel = "AI unavailable";
+            _aiTitle = ex.Message;
+        }
+        catch (HttpRequestException)
+        {
+            _aiClass = "dot-bad";
+            _aiLabel = "AI: network error";
+            _aiTitle = "Cannot reach the AI health endpoint.";
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignored - shutting down.
+        }
+        catch
+        {
+            _aiClass = "dot-bad";
+            _aiLabel = "AI: unknown";
+            _aiTitle = "AI status is unknown.";
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string Categorise(string? errorCode) => errorCode switch
+    {
+        "exchange_not_configured" => "Exchange: not configured",
+        "exchange_authentication_failed" => "Exchange: auth failed",
+        "exchange_timeout" => "Exchange: timeout",
+        "exchange_connection_failed" => "Exchange: unreachable",
+        "exchange_mailbox_error" => "Exchange: mailbox error",
+        _ => "Exchange unavailable",
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        StatusNotifier.Changed -= OnStatusChanged;
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}
