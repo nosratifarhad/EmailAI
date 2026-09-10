@@ -1,0 +1,12 @@
+Temporary branch-protection probe for repository verification.
+
+This file exists only on the branch qa/protection-final-test, to prove that the protected-branch
+configuration works end to end:
+
+  * a pull request against main can be created,
+  * the required check "Verify pull request" (.github/workflows/ci.yml) starts and passes on it,
+  * the pull request is reported as mergeable under the final ruleset,
+  * the owner can merge their own pull request (already proven by the real merge of PR #4).
+
+The probe pull request is closed WITHOUT merging and this branch is deleted afterwards, so main
+never contains this file.
