@@ -274,6 +274,7 @@ through the environment instead (`AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`), with
 | `tests/EmailAI.Tests` | xUnit tests for the AI layer, the mail/identity/notification surface and the host endpoints (fake HTTP handlers and in-memory Exchange - no live provider or mailbox) |
 | `tools/EwsApiProbe` | Reflection probe used during EWS development |
 | `tools/EwsAuthProbe` | Reproducible EWS authentication probes (explicit Windows / UsernamePassword modes) |
+| `.github/workflows` | `ci.yml` verifies every pull request and every push to `main` (build, tests, shell syntax, secret/configuration scan); `release.yml` packages the Windows installer for a `v*.*.*` tag |
 
 ## Run from source (developers)
 
@@ -858,6 +859,41 @@ npm run release              # the full, fail-fast release pipeline (see below)
 `npm start` expects `desktop/aspnet-publish/EmailAI.Api.exe`, so run `npm run publish:server`
 first. Useful flags: `EMAILAI_SMOKE_QUIT_MS=30000` quits the app after 30 s (a headless smoke
 test of the real start/stop path), `EMAILAI_DISABLE_NOTIFICATIONS=1` disables toasts.
+
+## Contributing
+
+**`main` is protected: every change - including the maintainer's - arrives through a pull request
+and must pass CI before it can be merged. Direct pushes, force pushes and deletion of `main` are
+rejected by the server.** The full policy is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+1. **Fork** the repository (or clone it, if you have write access).
+2. **Create a feature branch** off `main`: `git switch -c fix/short-description main`.
+3. **Make the change** and add the tests/documentation it needs.
+4. **Run the verification locally** - the same commands the required check runs:
+   `dotnet build EmailAI.slnx -c Release`, `dotnet test EmailAI.slnx -c Release`,
+   `node --check desktop/main.js`, and `cd desktop; node scripts/verify-secrets.js
+   --allow-development-config ../src ../.env.example`.
+5. **Open a pull request against `main`** and fill in the template (`.github/PULL_REQUEST_TEMPLATE.md`).
+6. **CI runs automatically**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) starts on the
+   pull request and reports the check **`Verify pull request`**.
+7. **The pull request must satisfy the repository checks** - `Verify pull request` green, the branch
+   up to date with `main`, and no unresolved review conversation - otherwise the merge stays blocked.
+8. **The maintainer merges with squash.** `main` accepts squash merges only, so the history stays one
+   commit per change; the head branch is deleted afterwards.
+
+| Protected on `main` | Enforced by |
+| --- | --- |
+| Direct push | Ruleset `main - pull request workflow`: *require a pull request before merging* |
+| Force push / non-fast-forward update | Ruleset `main - integrity`: *block force pushes* |
+| Deleting `main` | Ruleset `main - integrity`: *restrict deletions* |
+| Merge method | Squash only (ruleset + repository settings) |
+| Required status check | `Verify pull request` (strict: the branch must be up to date) |
+| Bypass actors | None - the rules bind the maintainer too |
+
+Required approvals are **0** because a single maintainer cannot approve their own pull request; the
+maintainer reviews every pull request by hand before merging. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md#4-branch-protection-on-main) for the reasoning and for what to
+change when a second maintainer joins.
 
 ## Windows release (packaging and distribution)
 

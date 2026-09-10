@@ -15,7 +15,8 @@ release notes, and - once published - a GitHub Release asset (installer + checks
 
 **Responsibilities.** `desktop/scripts/release.js` (the pipeline), `desktop/package.json`
 (packaging configuration), `desktop/scripts/verify-secrets.js` (gate),
-`.github/workflows/release.yml` (CI), the releaser (tag + asset upload).
+`.github/workflows/ci.yml` (the pull-request gate), `.github/workflows/release.yml` (release CI),
+the releaser (tag + asset upload).
 
 **Invariants.**
 
@@ -44,6 +45,20 @@ release notes, and - once published - a GitHub Release asset (installer + checks
     can be verified without trusting the transfer.
 11. Release notes state what was validated and never claim a test or packaging step that did not
     run.
+12. Packaging has exactly one trigger: a `v*.*.*` tag or a manual dispatch of
+    `.github/workflows/release.yml`. `.github/workflows/ci.yml` (pull requests and pushes to `main`)
+    runs build, tests and the scan gates but **never** publishes, packages or uploads an artifact,
+    so a pull request cannot consume the NSIS toolchain or release permissions.
+
+**Change flow.** Every change - the maintainer's included - reaches `main` through a pull request.
+`main` is protected by two repository rulesets that target `refs/heads/main` only and have **no
+bypass actors**: `main - integrity` blocks force pushes and deletion, and
+`main - pull request workflow` requires a pull request with the strict status check
+`Verify pull request` (produced by `.github/workflows/ci.yml`) and allows squash merges only.
+Required approvals are **0**, because a single maintainer cannot approve their own pull request and
+a required approval would freeze the branch; the maintainer reviews every pull request by hand
+before merging. Raise `required_approving_review_count` to `1` once a second maintainer exists.
+`CONTRIBUTING.md` is the contributor-facing statement of this policy.
 
 **Failure modes.**
 
@@ -66,11 +81,15 @@ accounts or credentials - only placeholders.
 Release publishing: the repository owner (tag + asset). Runtime configuration: 02/05/13.
 
 **Implementation.** `desktop/package.json`, `desktop/scripts/release.js`,
-`desktop/scripts/verify-secrets.js`, `desktop/main.js`, `.github/workflows/release.yml`,
+`desktop/scripts/verify-secrets.js`, `desktop/main.js`, `.github/workflows/ci.yml`,
+`.github/workflows/release.yml`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`,
 `RELEASE-NOTES.md`, `.gitignore`.
 
 **Tests.** `cd desktop; npm run release` (tests → build → publish → package → scan → installer +
 checksum verification). The packaging contract itself is pinned by
 `tests/EmailAI.Tests/ReleasePackagingTests.cs` (artifact name, NSIS shape, samples, workflow,
-documentation, no private endpoint, and the scan gate executed against planted defects). Current
-result is recorded in `RELEASE-NOTES.md`.
+documentation, no private endpoint, and the scan gate executed against planted defects), and the
+change flow by `tests/EmailAI.Tests/RepositoryWorkflowTests.cs` (CI triggers, ordered gates, no
+packaging in `ci.yml`, the required check name `Verify pull request` in every document that states
+the policy, and a tag/dispatch-only release workflow). Current result is recorded in
+`RELEASE-NOTES.md`.

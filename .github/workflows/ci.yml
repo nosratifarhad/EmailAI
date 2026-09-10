@@ -1,0 +1,83 @@
+# EmailAI pull-request verification pipeline.
+#
+# Triggers:
+#   * pull_request -> main : every change reaches main through a pull request, and this
+#                            workflow produces the "Verify pull request" check that the
+#                            "main - pull request workflow" ruleset REQUIRES before merge
+#                            (see CONTRIBUTING.md and .ai/spec/15-release-distribution.md).
+#   * push -> main         : the identical verification runs on what actually landed.
+#
+# Scope: build, test and scan. Packaging is deliberately NOT done here - the Windows
+# installer, its checksum and the GitHub Release assets belong to
+# .github/workflows/release.yml (v*.*.* tag or manual dispatch), so a pull request never
+# pays for the NSIS toolchain.
+#
+# Secrets: none are required. desktop/scripts/verify-secrets.js fails the run when a
+# secret-shaped value, a development-only appsettings file or a non-placeholder endpoint
+# appears in the source tree.
+
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify pull request
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Electron toolchain
+        run: npm ci
+
+      - name: Check the Electron shell and pipeline scripts parse
+        run: |
+          node --check main.js
+          node --check scripts/release.js
+          node --check scripts/verify-secrets.js
+
+      - name: Secret and packaging scan (source tree)
+        run: node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
+
+      - name: Restore solution
+        working-directory: .
+        run: dotnet restore EmailAI.slnx
+
+      - name: Build solution (Release)
+        working-directory: .
+        run: dotnet build EmailAI.slnx -c Release
+
+      - name: Test solution (Release)
+        working-directory: .
+        run: dotnet test EmailAI.slnx -c Release
