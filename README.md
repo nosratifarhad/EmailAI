@@ -17,7 +17,7 @@ gateway in the middle.
 **Normal users do not need to build EmailAI from source.** No .NET SDK, no Node.js, no clone.
 
 1. Open the **Releases** page of this repository and download the latest
-   `EmailAI-Setup-<version>.exe` (for example `EmailAI-Setup-1.1.0.exe`) - optionally with its
+   `EmailAI-Setup-<version>.exe` (for example `EmailAI-Setup-1.3.1.exe`) - optionally with its
    `.sha256` checksum file next to it.
 2. Run the installer (per-user install, **no administrator rights required**). Windows
    SmartScreen may warn because the build is not code-signed: *More info → Run anyway*.
@@ -28,9 +28,9 @@ gateway in the middle.
 5. Read your Inbox, then use **Summarize**, **Suggest reply** and **Generate reply**.
 
 > **Where the release lives.** The installer is published as a **GitHub Release asset** of this
-> repository (`Releases` → the version you want → `Assets`), together with `EmailAI-Setup-<version>.exe.sha256`.
-> This working copy has **no Git remote configured**, so no absolute URL can be stated here without
-> inventing one. The release notes for the current version are in
+> repository (`https://github.com/nosratifarhad/EmailAI/releases`) - `Releases` → the version you
+> want → `Assets` - together with `EmailAI-Setup-<version>.exe.sha256`, and the release title states
+> the same version as the installer and the tag. The release notes for the current version are in
 > [`RELEASE-NOTES.md`](RELEASE-NOTES.md). Building from source is described under
 > [Developer setup](#developer-setup) - it is **not** the normal install path.
 
@@ -893,6 +893,16 @@ The features added on top of that slice are covered by dedicated suites:
   absence of private endpoints and corporate account domains anywhere in the repository, and the real
   scan gate executed against a planted secret, a planted development configuration and the shipped
   sample.
+- `ReleaseVersionTests` - the version-identity contract, verified by **running** the real release
+  gate and notes generator (`desktop/scripts/verify-release.js`, `release-version.js`,
+  `release-notes.js`): a tag that matches the package passes and a mismatching one fails with the
+  expected/actual version and their sources, a tag that is not `vX.Y.Z` fails, a tag that does not
+  point at the commit being built fails, an installer named for another version / a checksum that
+  belongs to another file / a missing checksum file / an installer without version metadata / release
+  notes describing another version all fail, and the generated notes carry the release version, the
+  installer and the real SHA-256 of that exact file. A scan of the release machinery fails on any
+  hard-coded version literal, so nothing can silently fall back to a previous release's version.
+
 
 Opt-in **real** integration tests (`AiIntegrationTests`, `ExchangeIntegrationTests`) are
 disabled by default; when the integration environment is absent they report
@@ -951,8 +961,10 @@ rejected by the server.** The full policy is in [`CONTRIBUTING.md`](CONTRIBUTING
 3. **Make the change** and add the tests/documentation it needs.
 4. **Run the verification locally** - the same commands the required check runs:
    `dotnet build EmailAI.slnx -c Release`, `dotnet test EmailAI.slnx -c Release`,
-   `node --check desktop/main.js`, and `cd desktop; node scripts/verify-secrets.js
-   --allow-development-config ../src ../.env.example`.
+   `node --check desktop/main.js` (and the other pipeline scripts under `desktop/scripts/`), and
+   `cd desktop; node scripts/verify-secrets.js --allow-development-config ../src ../.env.example`.
+   A release/packaging change additionally runs `cd desktop; npm run release` (it exercises the
+   version gate, the packaging and the artifact verification end to end).
 5. **Open a pull request against `main`** and fill in the template (`.github/PULL_REQUEST_TEMPLATE.md`).
 6. **CI runs automatically**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) starts on the
    pull request and reports the check **`Verify pull request`**.
@@ -977,9 +989,18 @@ change when a second maintainer joins.
 
 ## Windows release (packaging and distribution)
 
-**Versioning.** `desktop/package.json` `"version"` is the single source of truth
-(electron-builder derives the installer name from it): bump it with
-`npm version <x.y.z> --no-git-tag-version`, then run the release. Current version: **1.1.0**.
+**One version identity.** `desktop/package.json` `"version"` is the single source of truth:
+electron-builder derives the installer name from it (`build.nsis.artifactName`), and the release tag
+must equal it. Bump it with `npm version <x.y.z> --no-git-tag-version` **in a pull request**, merge
+it, then push the tag `v<x.y.z>`. Current version: **1.3.1**.
+
+The pipeline resolves the version in one place (`desktop/scripts/release-version.js`) and refuses to
+continue when the tag and the package disagree - locally and in CI:
+
+```powershell
+cd desktop
+node scripts/verify-release.js --tag v1.3.1   # the gate the release workflow runs first
+```
 
 **Build the installer** - one command, fail-fast (no installer is produced if any step fails):
 
@@ -990,13 +1011,13 @@ npm run release
 
 | Step | What it runs |
 | --- | --- |
-| 1 | Validate the project layout and toolchain |
+| 1 | Validate the project layout, the toolchain and the release version identity (tag = `package.json` version = installer name), and that the tag points at the commit being built |
 | 2 | `dotnet test tests/EmailAI.Tests -c Release` |
 | 3 | `dotnet build EmailAI.slnx -c Release` |
 | 4 | Clean + `dotnet publish src/EmailAI.Api -c Release -r win-x64 --self-contained true` |
 | 5 | Clean + `electron-builder --win nsis` |
 | 6 | `node scripts/verify-secrets.js` over the publish **and** the packaged backend: secrets, development-only configuration, non-placeholder endpoints |
-| 7 | Verify the installer exists, that the packaged backend is the fresh publish, and write `<installer>.sha256` |
+| 7 | Verify the release: exactly one installer named for this version, its `.sha256` matching that exact file, the version embedded in the installer, and the packaged backend being the fresh publish; generate `desktop/dist/RELEASE-NOTES.md` for this version from the real Git history and check it against the artifact |
 
 **Artifact:** `desktop/dist/EmailAI-Setup-<version>.exe` (**x64 only** - there is no x86/ARM64
 build), plus `...exe.blockmap` and `...exe.sha256`. `desktop/dist/` and `desktop/aspnet-publish/` are
@@ -1009,15 +1030,18 @@ Exchange/AI endpoint.
 and printed in the release summary). To verify a download:
 
 ```powershell
-Get-FileHash .\EmailAI-Setup-1.1.0.exe -Algorithm SHA256   # compare with the published .sha256 file
+Get-FileHash .\EmailAI-Setup-1.3.1.exe -Algorithm SHA256   # compare with the published .sha256 file
 ```
 
-**Publishing.** Attach the installer and its checksum to a GitHub Release (tag `v1.1.0`, assets
-`EmailAI-Setup-1.1.0.exe` + `EmailAI-Setup-1.1.0.exe.sha256`, notes from
-[`RELEASE-NOTES.md`](RELEASE-NOTES.md)). `.github/workflows/release.yml` automates exactly that on a
-`v*.*.*` tag push: it runs `npm run release` (the same command as above, so CI and a local release
-cannot drift), scans the source tree, verifies the artifact and its checksum, uploads both as
-workflow artifacts and attaches them as the release assets - and never prints a secret.
+**Publishing.** `.github/workflows/release.yml` runs for a `v*.*.*` tag (or a manual dispatch that
+names the tag): it validates the tag against `desktop/package.json` **before** it installs anything,
+runs the same `npm run release` command as above, re-verifies the installer name, its checksum, the
+version embedded in the installer and the generated release notes, and only then attaches exactly
+those two files - `EmailAI-Setup-<version>.exe` and `EmailAI-Setup-<version>.exe.sha256` - to a
+GitHub Release titled `EmailAI <version>` whose body is the notes generated for that release. A
+release therefore cannot carry another version's installer, file name, checksum or notes; a version
+mismatch, a stale installer, a wrong checksum or notes for another version stop the release. The
+checked-in [`RELEASE-NOTES.md`](RELEASE-NOTES.md) is the record of the current version.
 
 ## Architecture
 
@@ -1092,7 +1116,7 @@ specification set ([`.ai/spec/`](.ai/spec/README.md)); the integration-level sum
 | Does it ever send a reply by itself? | No. AI produces text only; a reply leaves the application when **you** press **Send reply** |
 | Does it mark mail as read, or move/delete/compose? | Not in this version: it is a read + reply slice ([Current limitations](#current-limitations)) |
 | Can I uninstall cleanly? | Yes - *Settings → Apps → EmailAI → Uninstall*. Then delete `%APPDATA%\EmailAI` and the two Credential Manager entries if you also want to remove your configuration |
-| How do I know the download is intact? | Compare it with the published `EmailAI-Setup-<version>.exe.sha256`: `Get-FileHash .\EmailAI-Setup-1.1.0.exe -Algorithm SHA256` |
+| How do I know the download is intact? | Compare it with the published `EmailAI-Setup-<version>.exe.sha256`: `Get-FileHash .\EmailAI-Setup-1.3.1.exe -Algorithm SHA256` |
 
 ## Current limitations
 

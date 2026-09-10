@@ -138,16 +138,23 @@ public class ReleasePackagingTests(ITestOutputHelper output)
     // ------------------------------------------------- release pipeline and gates
 
     [Fact]
-    public void ReleaseScript_SingleSourcesTheVersionAndArtifactNameFromPackageJson()
+    public void ReleaseScript_SingleSourcesTheVersionAndArtifactNameFromTheVersionLibrary()
     {
         var script = Repo.Read("desktop/scripts/release.js");
+        var library = Repo.Read("desktop/scripts/release-version.js");
         var version = RequiredString(Parse(Repo.Read("desktop/package.json")).RootElement, "version");
 
-        // The name is derived from the packaging configuration, never duplicated in the pipeline.
-        Assert.Contains("packageJson.build", script, StringComparison.Ordinal);
-        Assert.Contains("artifactName", script, StringComparison.Ordinal);
-        Assert.Contains("artifactTemplate.replace('${version}', version)", script, StringComparison.Ordinal);
+        // The version and the installer name are resolved by the shared library, which the gate
+        // (verify-release.js) and the notes generator use too: no script derives its own name, and
+        // none of them carries a version literal to fall back to.
+        Assert.Contains("require('./release-version')", script, StringComparison.Ordinal);
         Assert.DoesNotContain(version, script, StringComparison.Ordinal);
+        Assert.Contains(
+            "artifactTemplate(desktopDir).replace(ARTIFACT_VERSION_TOKEN, version)",
+            library,
+            StringComparison.Ordinal);
+        Assert.Contains("artifactName", library, StringComparison.Ordinal);
+        Assert.DoesNotContain(version, library, StringComparison.Ordinal);
 
         // Every gate the release depends on is actually invoked by the pipeline.
         Assert.Contains("runNpm('test')", script, StringComparison.Ordinal);
@@ -158,10 +165,15 @@ public class ReleasePackagingTests(ITestOutputHelper output)
         Assert.Contains("appsettings.Development.json", script, StringComparison.Ordinal);
         Assert.Contains("appsettings.Local.json", script, StringComparison.Ordinal);
 
-        // The artifact is verified, and its checksum is written next to it.
+        // The artifact is verified and its checksum is written next to it - both through the same
+        // library the gate uses, so the checksum always belongs to the exact published file.
         Assert.Contains("was not created", script, StringComparison.Ordinal);
-        Assert.Contains("createHash('sha256')", script, StringComparison.Ordinal);
+        Assert.Contains("releaseVersion.sha256(", script, StringComparison.Ordinal);
+        Assert.Contains("verifyInstaller(", script, StringComparison.Ordinal);
         Assert.Contains(".sha256", script, StringComparison.Ordinal);
+
+        // The published release body is generated for this version, never carried over.
+        Assert.Contains("releaseNotes.writeReleaseNotes(", script, StringComparison.Ordinal);
 
         // "relative to the repository", never a machine-specific path.
         Assert.DoesNotMatch(@"[A-Za-z]:\\", script);
@@ -241,7 +253,7 @@ public class ReleasePackagingTests(ITestOutputHelper output)
     // ------------------------------------------------ CI, ignore rules, distribution
 
     [Fact]
-    public void Workflow_RunsTheReleasePipelineAndPublishesTheInstaller()
+    public void Workflow_RunsTheReleasePipelineAndPublishesTheVerifiedArtifacts()
     {
         var workflow = Repo.Read(".github/workflows/release.yml");
 
@@ -251,14 +263,34 @@ public class ReleasePackagingTests(ITestOutputHelper output)
         Assert.DoesNotContain("npm run dist", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet restore EmailAI.slnx", workflow, StringComparison.Ordinal);
 
-        // The gates and the artifact it uploads.
+        // The gates and the identity it publishes.
         Assert.Contains("--allow-development-config", workflow, StringComparison.Ordinal);
-        Assert.Contains("EmailAI-Setup-$version.exe", workflow, StringComparison.Ordinal);
-        Assert.Contains("EmailAI-Setup-*.exe", workflow, StringComparison.Ordinal);
+        Assert.Contains("node scripts/verify-release.js", workflow, StringComparison.Ordinal);
+        Assert.Contains("--github-output", workflow, StringComparison.Ordinal);
+        Assert.Contains("steps.version.outputs.installer", workflow, StringComparison.Ordinal);
+        Assert.Contains("steps.version.outputs.checksum", workflow, StringComparison.Ordinal);
+
+        // Fail-closed: the tag/package gate runs before anything is built, the artifact gate after.
+        var versionGate = workflow.IndexOf("Validate the release version", StringComparison.Ordinal);
+        var pipeline = workflow.IndexOf("run: npm run release", StringComparison.Ordinal);
+        var artifactGate = workflow.IndexOf("Verify the installer", StringComparison.Ordinal);
+        Assert.True(
+            versionGate >= 0 && versionGate < pipeline,
+            "the tag/package version gate must run before the packaging pipeline");
+        Assert.True(
+            artifactGate > pipeline,
+            "the artifact/checksum/metadata/notes gate must run after the packaging pipeline");
+
+        // The upload and the release carry the exact verified files - a wildcard could publish a
+        // stale installer, which is how a release ends up carrying another version.
+        Assert.DoesNotContain("EmailAI-Setup-*.exe", workflow, StringComparison.Ordinal);
         Assert.Contains(".sha256", workflow, StringComparison.Ordinal);
         Assert.Contains("actions/upload-artifact@v4", workflow, StringComparison.Ordinal);
         Assert.Contains("softprops/action-gh-release@v2", workflow, StringComparison.Ordinal);
-        Assert.Contains("RELEASE-NOTES.md", workflow, StringComparison.Ordinal);
+        Assert.Contains("name: EmailAI ${{ steps.version.outputs.version }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("tag_name: ${{ steps.version.outputs.tag }}", workflow, StringComparison.Ordinal);
+        Assert.Contains("body_path: desktop/dist/RELEASE-NOTES.md", workflow, StringComparison.Ordinal);
+        Assert.Contains("fail_on_unmatched_files: true", workflow, StringComparison.Ordinal);
         Assert.Contains("contents: write", workflow, StringComparison.Ordinal);
         Assert.Contains("'v*.*.*'", workflow, StringComparison.Ordinal);
     }
@@ -288,7 +320,7 @@ public class ReleasePackagingTests(ITestOutputHelper output)
     // ------------------------------------------------------------------ documentation
 
     [Fact]
-    public void Documentation_NamesTheCurrentInstallerArtifact()
+    public void Documentation_NamesTheCurrentInstallerArtifactForTheCurrentVersion()
     {
         var installer = InstallerFileName();
         Assert.Matches(@"^EmailAI-Setup-\d+\.\d+\.\d+\.exe$", installer);
@@ -296,6 +328,13 @@ public class ReleasePackagingTests(ITestOutputHelper output)
         var readme = Repo.Read("README.md");
         Assert.Contains(installer, readme, StringComparison.Ordinal);
         Assert.Contains(installer, Repo.Read("RELEASE-NOTES.md"), StringComparison.Ordinal);
+
+        // The release record states the version it belongs to: the published body is generated for
+        // the release version, and the checked-in record may not describe an earlier one.
+        var version = RequiredString(Parse(Repo.Read("desktop/package.json")).RootElement, "version");
+        var releaseNotes = Repo.Read("RELEASE-NOTES.md");
+        Assert.Contains($"# EmailAI {version} ", releaseNotes, StringComparison.Ordinal);
+        Assert.DoesNotMatch(@"# EmailAI \d+\.\d+\.\d+ ", Regex.Replace(releaseNotes, Regex.Escape($"# EmailAI {version} "), string.Empty));
 
         // The download path is the first thing a visitor reads, and it must never ask a normal
         // user to clone or build the project.

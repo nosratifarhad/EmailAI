@@ -9,9 +9,13 @@
 
 - [ ] `dotnet build EmailAI.slnx -c Release` - 0 warnings / 0 errors
 - [ ] `dotnet test EmailAI.slnx -c Release` - all tests green
-- [ ] `node --check desktop/main.js`, `desktop/scripts/release.js`, `desktop/scripts/verify-secrets.js`
+- [ ] `node --check desktop/main.js`, and the release scripts
+      (`desktop/scripts/release.js`, `release-version.js`, `verify-release.js`, `release-notes.js`,
+      `verify-secrets.js`)
 - [ ] `cd desktop; node scripts/verify-secrets.js --allow-development-config ../src ../.env.example`
-- [ ] packaging/release change only: `cd desktop; npm run release`
+- [ ] packaging/release change only: `cd desktop; npm run release` (the version gate, packaging and
+      artifact verification), and `node scripts/verify-release.js --tag v<version>` when the rule
+      under test is the release identity
 
 ## Checklist
 

@@ -7,7 +7,10 @@
 //     npm run release
 //
 // Pipeline (fail-fast - if any step fails, no installer is produced):
-//   1. Validate the project layout and the required toolchain.
+//   1. Validate the project layout, the toolchain and the release version identity: the Git tag
+//      (--tag / EMAILAI_RELEASE_TAG, or the tag at HEAD), desktop/package.json and its lock file
+//      must describe one version (scripts/release-version.js). A tag that disagrees with the
+//      package stops the release here - the pipeline never edits the version to fit a tag.
 //   2. dotnet test  tests/EmailAI.Tests -c Release          (npm run test)
 //   3. dotnet build EmailAI.slnx    -c Release              (npm run build:server)
 //   4. Clean desktop/aspnet-publish, then republish the backend self-contained:
@@ -17,18 +20,27 @@
 //      electron-builder --win nsis                          (npm run dist)
 //   6. Scan the published and packaged backend (scripts/verify-secrets.js): no secret value,
 //      no development-only appsettings file, no non-placeholder Exchange/AI endpoint.
-//   7. Verify desktop/dist/<artifactName from package.json>, confirm the packaged backend is
-//      this publish, and write a SHA-256 checksum next to the installer.
+//   7. Verify the release: exactly one installer named for this version, its SHA-256 matching the
+//      checksum file, the version embedded in the installer, the packaged backend being this
+//      publish - then generate desktop/dist/RELEASE-NOTES.md for this version from the real Git
+//      history (scripts/release-notes.js) and check the notes against the artifact.
 //
-// desktop/package.json is the single source of truth: both "version" and
-// "build.nsis.artifactName" (EmailAI-Setup-<version>.exe, x64 only) are read from it, so a
-// release is simply "bump version in desktop/package.json, then npm run release".
+// desktop/package.json is the single source of truth for the version and for the installer name
+// (build.nsis.artifactName, EmailAI-Setup-<version>.exe, x64 only). scripts/release-version.js
+// resolves both and verifies the identity above; scripts/verify-release.js exposes the same checks
+// as a standalone gate, so a local release and CI (.github/workflows/release.yml) cannot drift.
 // =============================================================================
 
 const { spawnSync } = require('node:child_process');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+
+// The release identity lives in one module: scripts/release-version.js resolves the version and
+// the installer name and performs every identity check (tag, package, installer name, checksum,
+// installer metadata). scripts/verify-release.js is the same checks as a standalone gate and
+// scripts/release-notes.js generates the release body, so the three can never disagree.
+const releaseVersion = require('./release-version');
+const releaseNotes = require('./release-notes');
 
 const DESKTOP_DIR = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..');
@@ -36,16 +48,37 @@ const PUBLISH_DIR = path.join(DESKTOP_DIR, 'aspnet-publish');
 const DIST_DIR = path.join(DESKTOP_DIR, 'dist');
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(DESKTOP_DIR, 'package.json'), 'utf8'));
-const version = packageJson.version;
 const startedAt = Date.now();
 
-// electron-builder derives the installer file name from build.nsis.artifactName in
-// desktop/package.json, so that template is read here instead of hard-coding a name (or a
-// version) in the pipeline - a version bump can never desynchronise the two.
-const artifactTemplate = packageJson.build && packageJson.build.nsis
-  ? packageJson.build.nsis.artifactName
-  : null;
-const installerName = artifactTemplate ? artifactTemplate.replace('${version}', version) : null;
+/** Reads `--name value` from the command line (used only for --tag). */
+function argumentValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : null;
+}
+
+// The tag this run releases: an explicit --tag / EMAILAI_RELEASE_TAG, otherwise the tag at HEAD.
+// A build on an untagged commit is a local development build and says so; whenever a tag is known
+// the tag and the package version must describe the same release, and the tag must point at the
+// commit being built - otherwise the pipeline stops here, before anything is compiled.
+const suppliedTag = argumentValue('--tag') || process.env.EMAILAI_RELEASE_TAG || null;
+const headTag = releaseVersion.tagAtHead(REPO_ROOT);
+const releaseTag = suppliedTag || headTag;
+
+let version;
+let installerName;
+try {
+  if (releaseTag) {
+    const identity = releaseVersion.resolveVersionIdentity({ desktopDir: DESKTOP_DIR, tag: releaseTag });
+    version = identity.version;
+    installerName = identity.installer;
+  } else {
+    version = releaseVersion.packageVersion(DESKTOP_DIR);
+    installerName = releaseVersion.installerFileName(DESKTOP_DIR, version);
+  }
+} catch (error) {
+  if (error instanceof releaseVersion.ReleaseVersionError) fail(error.message);
+  throw error;
+}
 
 // Developer-only configuration that must never appear in a Release publish or in the
 // installer: the packaged application runs as Production.
@@ -119,15 +152,22 @@ for (const scriptName of ['test', 'build:server', 'publish:server', 'dist', 'rel
     fail(`npm script "${scriptName}" is missing from desktop/package.json`);
   }
 }
-if (!/^\d+\.\d+\.\d+/.test(version)) {
-  fail(`package.json "version" is not a simple semver (got "${version}").`);
-}
+// The version identity (tag = package version = installer name) was resolved above; here it is
+// reported, and a known tag must point at the commit being built.
+if (releaseTag) {
+  try {
+    releaseVersion.assertTagPointsAtHead({ repoRoot: REPO_ROOT, tag: releaseTag });
+  } catch (error) {
+    if (error instanceof releaseVersion.ReleaseVersionError) fail(error.message);
+    throw error;
+  }
 
-if (!artifactTemplate || !artifactTemplate.includes('${version}')) {
-  fail('desktop/package.json build.nsis.artifactName must contain "${version}" - it names the installer.');
-}
-if (/^[A-Za-z]:[\\/]|^\//.test(artifactTemplate)) {
-  fail(`build.nsis.artifactName must be a file name, not a path (got "${artifactTemplate}").`);
+  console.log(`[ok]   version identity: tag ${releaseTag} = desktop/package.json ${version} = ${installerName}`);
+  console.log(`[ok]   the tag points at the checked out commit`);
+} else {
+  console.log(`[info] no release tag: neither --tag/EMAILAI_RELEASE_TAG nor a tag at HEAD, so this is a`);
+  console.log(`[info] local development build of version ${version}. The tag/package identity gate runs`);
+  console.log('[info] in .github/workflows/release.yml whenever a v*.*.* tag is pushed.');
 }
 
 const dotnetVersion = spawnSync('dotnet', ['--version'], { encoding: 'utf8', shell: true });
@@ -208,7 +248,7 @@ console.log('[ok]   packaged backend is clean of secrets, development config and
 // --------------------------------------------------- 7. verify and summarize
 
 console.log('');
-console.log(`[${time()}] Step 7/7: Verify the generated installer`);
+console.log(`[${time()}] Step 7/7: Verify the release (artifact, checksum, installer version, notes)`);
 
 const installerPath = path.join(DIST_DIR, installerName);
 if (!fs.existsSync(installerPath)) {
@@ -218,14 +258,12 @@ if (!fs.existsSync(installerPath)) {
   fail(`expected installer ${installerPath} was not created${
     found.length ? `; found: ${found.join(', ')}` : ''}`);
 }
-const installerBytes = fs.statSync(installerPath).size;
-const sizeMb = (installerBytes / (1024 * 1024)).toFixed(1);
 
 // Sanity check: the backend staged for the installer is the publish we just made.
 const stagedServerExe = path.join(DIST_DIR, 'win-unpacked', 'resources', 'server', 'EmailAI.Api.exe');
 const publishedInfo = fs.statSync(publishedExe);
 if (!fs.existsSync(stagedServerExe)) {
-  console.warn('[warn] win-unpacked\\resources\\server\\EmailAI.Api.exe not found (installer still produced).');
+  fail('win-unpacked\\resources\\server\\EmailAI.Api.exe is missing - the installer must carry the backend.');
 } else if (fs.statSync(stagedServerExe).mtimeMs < publishedInfo.mtimeMs) {
   fail('the packaged backend predates the fresh publish - rerun so the installer carries this build.');
 } else {
@@ -242,11 +280,50 @@ for (const name of FORBIDDEN_CONFIG_FILES) {
 }
 console.log('[ok]   packaged backend contains no development-only configuration');
 
-// SHA-256 next to the artifact, so a download can be verified without trusting the transfer.
-const sha256 = crypto.createHash('sha256').update(fs.readFileSync(installerPath)).digest('hex');
+// SHA-256 of the exact installer file that will be published, written next to it so a download can
+// be verified without trusting the transfer. The gate below re-reads both files and compares them.
+const sha256 = releaseVersion.sha256(installerPath);
 const checksumPath = `${installerPath}.sha256`;
 fs.writeFileSync(checksumPath, `${sha256}  ${installerName}\r\n`);
 console.log(`[info] SHA-256 written to ${checksumPath}`);
+
+// The release notes are generated from this release's identity, the real Git history since the
+// previous release tag and the SHA-256 of this exact installer file - never carried over from an
+// earlier release. On an untagged local build they are labelled with the tag they are destined for.
+const notesTag = releaseTag || `v${version}`;
+let notes = null;
+let verified = null;
+try {
+  notes = releaseNotes.writeReleaseNotes({
+    desktopDir: DESKTOP_DIR,
+    repoRoot: REPO_ROOT,
+    tag: notesTag,
+    installerPath,
+  });
+  console.log(
+    `[ok]   release notes generated for EmailAI ${notes.version}: ${notes.path} ` +
+    `(${notes.changes.length} change(s) since ${notes.previousTag || 'the start of the project'})`);
+
+  // The whole release contract in one pass: exactly one installer, its checksum file matching that
+  // exact file, the version embedded in the installer and notes describing this version and file.
+  verified = releaseVersion.verifyInstaller({
+    desktopDir: DESKTOP_DIR,
+    version,
+    tag: notesTag,
+    distDir: DIST_DIR,
+    notesPath: notes.path,
+  });
+} catch (error) {
+  if (error instanceof releaseVersion.ReleaseVersionError) fail(error.message);
+  throw error;
+}
+
+const installerBytes = verified.size;
+const sizeMb = (installerBytes / (1024 * 1024)).toFixed(1);
+console.log(`[ok]   installer verified: ${verified.installer} (${sizeMb} MB), SHA-256 matches its .sha256 file`);
+console.log(
+  `[ok]   installer metadata: FileVersion=${verified.metadata.fileVersion} ` +
+  `ProductVersion=${verified.metadata.productVersion} (version ${version})`);
 
 const totalSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
 console.log('');
@@ -254,10 +331,13 @@ bar();
 console.log('EmailAI Release Completed');
 bar();
 console.log(`Version:    ${version}`);
+console.log(`Tag:        ${releaseTag || `${notesTag} (not yet created in this checkout)`}`);
 console.log('Installer:');
 console.log(installerPath);
 console.log(`Size:       ${sizeMb} MB (${installerBytes.toLocaleString('en-US')} bytes)`);
-console.log(`SHA-256:    ${sha256}`);
+console.log(`SHA-256:    ${verified.sha256}`);
 console.log(`Checksum:   ${checksumPath}`);
+console.log(`Notes:      ${notes.path}`);
 console.log(`Total time: ${totalSeconds}s`);
 bar();
+
