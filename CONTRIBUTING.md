@@ -43,11 +43,15 @@ dotnet test    EmailAI.slnx -c Release         # offline unit + host + contract 
 
 node --check desktop/main.js
 node --check desktop/scripts/release.js
+node --check desktop/scripts/release-version.js
+node --check desktop/scripts/verify-release.js
+node --check desktop/scripts/release-notes.js
 node --check desktop/scripts/verify-secrets.js
 
 cd desktop
 npm ci
 node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
+node scripts/verify-release.js --tag "v$(node -p "require('./package.json').version")"   # tag vs package.json
 ```
 
 Only a packaging change additionally needs the release pipeline: `cd desktop; npm run release`.
@@ -99,12 +103,26 @@ approval of the latest push"; nothing else has to change.
 ## 6. Releases
 
 Releases are **not** produced by pull requests. `.github/workflows/release.yml` builds the Windows
-x64 installer only for a `v*.*.*` tag (or a manual dispatch): `npm run release` runs the tests,
-build, publish, NSIS packaging, the secret/configuration scan and the checksum verification.
+x64 installer only for a `v*.*.*` tag (or a manual dispatch that names the tag): `npm run release`
+runs the tests, build, publish, NSIS packaging, the secret/configuration scan and the release
+verification (installer name, checksum, the version embedded in the installer, generated notes).
 
 A version bump belongs in `desktop/package.json` (`npm version <x.y.z> --no-git-tag-version`) and
-lands through a pull request like any other change; the maintainer pushes the tag afterwards, and
-the release workflow attaches `EmailAI-Setup-<version>.exe` and its `.sha256` to the GitHub Release.
+lands through a pull request like any other change; the maintainer pushes the tag afterwards, and the
+release workflow attaches `EmailAI-Setup-<version>.exe` and its `.sha256` to the GitHub Release.
+
+**One version identity.** The tag must equal `desktop/package.json` `"version"`, and the workflow
+checks that *before* it builds anything:
+
+```powershell
+cd desktop
+node scripts/verify-release.js --tag v1.3.1   # PASS, or the release stops with expected/actual/sources
+```
+
+A tag that disagrees with the package is a release configuration error: the pipeline never edits the
+version to fit a tag, never renames an artifact and never reuses a previous installer. If you tag the
+wrong commit or the wrong version, delete the tag (or push a corrected one) and re-run - never
+rewrite a published release.
 
 ## 7. Licensing
 

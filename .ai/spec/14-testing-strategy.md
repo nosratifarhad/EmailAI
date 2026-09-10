@@ -64,7 +64,8 @@ manual/packaged checks.
 | Electron `node --check` fails | The shell cannot run; fix before packaging |
 | `verify-secrets` fails | A secret-shaped value reached the publish/package output; nothing is shipped |
 | `verify-secrets` reports a development configuration or a non-placeholder endpoint | The publish/package is not distributable; nothing is shipped |
-| `ReleasePackagingTests` red | A release-defining file changed without updating the contract (artifact name, samples, workflow, documentation, no-machine-path rule) |
+| `ReleasePackagingTests` red | A release-defining file changed without updating the contract (artifact name, samples, workflow, gate order, exact-artifact upload, documentation, no-machine-path rule) |
+| `ReleaseVersionTests` red | The version identity or the artifact contract regressed: the tag/package gate, the installer name, the checksum, the installer metadata or the generated notes no longer agree - or a hard-coded version reappeared in the release machinery |
 | `RepositoryWorkflowTests` red | The change flow drifted from the documented policy: a CI trigger, a gate, the check name, the pull-request template or the contribution documentation no longer matches the protected-branch rules |
 | `.github/workflows/ci.yml` red on a pull request | The ruleset keeps the pull request blocked (the required check `Verify pull request` is failing or missing); nothing reaches `main` |
 | Installer missing after `npm run release` | The pipeline fails with the expected path and the artifacts it did find |
@@ -77,11 +78,14 @@ gate (13).
 they are documented in `.env.example` and in the README's *Testing* section.
 
 **Implementation.** `tests/EmailAI.Tests/**` (`SettingsHostFactory`, `TestDoubles`,
-`IntegrationTestEnvironment`, `ReleasePackagingTests`, `RepositoryWorkflowTests`),
-`desktop/scripts/release.js`, `desktop/scripts/verify-secrets.js`, `.github/workflows/release.yml`,
-`.github/workflows/ci.yml`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`.
+`IntegrationTestEnvironment`, `ReleasePackagingTests`, `ReleaseVersionTests`,
+`RepositoryWorkflowTests`), `desktop/scripts/release.js`, `desktop/scripts/release-version.js`,
+`desktop/scripts/verify-release.js`, `desktop/scripts/release-notes.js`,
+`desktop/scripts/verify-secrets.js`, `.github/workflows/release.yml`, `.github/workflows/ci.yml`,
+`CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`.
 
-**Tests.** The suite itself. Current state: **420 automated tests, 0 failures** (`dotnet test
-tests/EmailAI.Tests -c Release`). Feature suites are named per specification; the folder-hierarchy
-feature is pinned by `CustomFolderKeyTests`, `MailFolderEndpointsTests`, `MailFolderSidebarTests` and
-`CustomMailFolderUiTests` (16).
+**Tests.** The suite itself. Current state: **467 automated tests, 0 failures** (`dotnet test
+tests/EmailAI.Tests -c Release`). Feature suites are named per specification; the release-version
+identity is pinned by `ReleaseVersionTests` (14 cases that run the real gate and notes generator), the
+folder-hierarchy feature by `CustomFolderKeyTests`, `MailFolderEndpointsTests`, `MailFolderSidebarTests`
+and `CustomMailFolderUiTests` (16).

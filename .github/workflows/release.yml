@@ -1,15 +1,21 @@
 # EmailAI Windows release pipeline.
 #
 # Triggers:
-#   * a version tag push (v1.2.3)  -> build, test, scan, package and publish the installer
-#   * manual dispatch              -> same pipeline, optionally publishing a draft
+#   * a version tag push (vX.Y.Z)  -> validate, test, build, scan, package, verify and publish
+#   * manual dispatch              -> the same pipeline, publishing a DRAFT for the tag it is given
 #
 # It runs exactly the commands documented in the README ("Windows release"), so a local
 # `cd desktop && npm run release` and this workflow cannot drift apart. The pipeline itself
 # (scripts/release.js) runs .NET tests -> build -> self-contained publish -> NSIS package ->
-# scan (secrets, development-only config, non-placeholder endpoints) -> installer + SHA-256
-# verification, and this workflow only adds the source-tree scan before it and the artifact
-# and release upload after it.
+# scan (secrets, development-only config, non-placeholder endpoints) -> installer, checksum,
+# installer-metadata and release-note verification; this workflow only adds the release-version
+# gate before the build, re-runs the artifact gate after it, and uploads and publishes the exact
+# files that gate verified.
+#
+# Fail-closed: the first step refuses to continue when the Git tag and desktop/package.json
+# "version" disagree (or when the tag does not point at the commit being built), and a release is
+# never published when the installer name, the checksum, the version embedded in the installer or
+# the release notes disagree with that version.
 #
 # Secrets: none are required to build. If a code-signing certificate is added later, pass it
 # through CSC_LINK/CSC_KEY_PASSWORD as repository secrets - this workflow never echoes them and
@@ -23,10 +29,11 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
-      publish:
-        description: 'Publish a GitHub Release with the installer'
-        type: boolean
-        default: false
+      tag:
+        description: 'Release tag to package (vX.Y.Z) - must equal desktop/package.json "version"'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -41,8 +48,12 @@ jobs:
         working-directory: desktop
 
     steps:
+      # Full history: the release notes are built from the real commits since the previous release
+      # tag, and the version gate checks the tag against the commit being built.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -56,6 +67,18 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      # The gate that makes this defect class impossible: the tag that triggered the run must name
+      # the version desktop/package.json declares, and it must point at the commit being built.
+      # Nothing is installed, restored or built before this passes, and the resolved version, tag,
+      # installer and checksum names are handed to the steps below (no step derives its own).
+      - name: Validate the release version (tag vs desktop/package.json)
+        id: version
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag }}'
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = '${{ github.ref_name }}' }
+          node scripts/verify-release.js --tag "$tag" --github-output $env:GITHUB_OUTPUT
+
       - name: Install Electron toolchain
         run: npm ci
 
@@ -67,38 +90,45 @@ jobs:
         run: node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
 
       - name: Tests, build, publish, package, scan and verify (npm run release)
+        env:
+          # The pipeline re-validates the same identity and labels the release notes with this tag.
+          EMAILAI_RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: npm run release
 
-      - name: Verify installer artifact and checksum
-        shell: pwsh
+      # Independent confirmation of the packaged release, using the same checks as the pipeline:
+      # exactly one installer, its .sha256 calculated from that exact file, the version embedded in
+      # it, and release notes describing this version, this installer and this checksum.
+      - name: Verify the installer, its checksum, its version metadata and the release notes
         run: |
-          $version = (Get-Content package.json | ConvertFrom-Json).version
-          $installer = Join-Path 'dist' "EmailAI-Setup-$version.exe"
-          $checksum = "$installer.sha256"
-          if (-not (Test-Path $installer)) { throw "installer was not produced: $installer" }
-          if (-not (Test-Path $checksum)) { throw "checksum file was not produced: $checksum" }
-          $sizeMb = [math]::Round((Get-Item $installer).Length / 1MB, 1)
-          Write-Host "installer: $installer ($sizeMb MB)"
-          Get-FileHash $installer -Algorithm SHA256 | Format-List
-          Get-Content $checksum
+          node scripts/verify-release.js `
+            --tag "${{ steps.version.outputs.tag }}" `
+            --dist dist `
+            --notes dist/RELEASE-NOTES.md
 
-      - name: Upload installer as a workflow artifact
+      # The exact files the gate verified - never a wildcard, so a stale installer in the output
+      # folder can neither be published nor silently replace the expected one.
+      - name: Upload the installer and its .sha256 checksum as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: EmailAI-Setup-Windows-x64
           path: |
-            desktop/dist/EmailAI-Setup-*.exe
-            desktop/dist/EmailAI-Setup-*.exe.sha256
-            desktop/dist/EmailAI-Setup-*.exe.blockmap
+            desktop/dist/${{ steps.version.outputs.installer }}
+            desktop/dist/${{ steps.version.outputs.checksum }}
+            desktop/dist/${{ steps.version.outputs.installer }}.blockmap
           if-no-files-found: error
 
-      - name: Publish GitHub Release asset
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+      # The release title, its tag and its body all come from the version that passed the gates
+      # above; a manual dispatch produces a draft so nothing is published by accident.
+      - name: Publish the GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          name: EmailAI ${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.version.outputs.tag }}
           files: |
-            desktop/dist/EmailAI-Setup-*.exe
-            desktop/dist/EmailAI-Setup-*.exe.sha256
-          body_path: RELEASE-NOTES.md
+            desktop/dist/${{ steps.version.outputs.installer }}
+            desktop/dist/${{ steps.version.outputs.checksum }}
+          body_path: desktop/dist/RELEASE-NOTES.md
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           fail_on_unmatched_files: true
+

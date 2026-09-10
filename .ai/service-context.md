@@ -641,9 +641,10 @@ misconfigured integration.
 | Unit | Options/validation, endpoint building, prompts and injection wording, truncation, sanitization, direction resolution, identity/aliases, notification detection, credential policy, status fan-out | `dotnet test tests/EmailAI.Tests -c Release` (offline) |
 | Host | The real ASP.NET Core host with in-memory stores: JSON contracts, status codes, no-secret guarantees, prerendered HTML including the retry behaviour | the same command |
 | Packaging contract | The release-defining files: artifact name, NSIS shape, sample configuration, no development configuration, no private endpoint, the CI pipeline, the documentation, and the scan gate itself (executed against planted defects) | the same command (`ReleasePackagingTests`) |
+| Release identity | The real release gate and notes generator, run against a matching tag, a mismatching tag, a tag that is not `vX.Y.Z`, a tag pointing at another commit, an installer named for another version, a checksum belonging to another file, a missing checksum file, an installer without version metadata, notes describing another version - and no hard-coded version in the release machinery | the same command (`ReleaseVersionTests`) |
 | Opt-in real | One real chat completion and one real EWS probe, only when the environment is present | `EMAILAI_AI_INTEGRATION_TEST=true` / `EMAILAI_EXCHANGE_INTEGRATION_TEST=true` plus the `EMAILAI_*`/`EXCHANGE_*` variables |
 | Shell | The Electron script is syntactically valid, and the real lifecycle starts, becomes healthy, loads the UI and stops without an orphan | `node --check desktop/main.js`; run with `EMAILAI_SMOKE_QUIT_MS` |
-| Release | The installer exists, contains the fresh backend, carries no secret, no development configuration and no non-placeholder endpoint, and its SHA-256 is written | `cd desktop; npm run release` |
+| Release | One version identity (tag = `desktop/package.json` = installer name = installer metadata = checksum = release title/notes), exactly one installer, the checksum of that exact file, and notes generated for the version being released | `cd desktop; npm run release` (or the gate alone: `node scripts/verify-release.js --tag vX.Y.Z --dist dist --notes dist/RELEASE-NOTES.md`) |
 
 The default suite is fully offline and deterministic: no live provider, no mailbox, no network and no
 real Credential Manager (in-memory doubles instead), and it never reads or writes the developer's own
@@ -653,7 +654,10 @@ their environment is absent, and never use fake credentials. Spec 14 is the deta
 ## Release and package model
 
 ```text
-source tree
+source tree + the release Git tag (vX.Y.Z)
+  -> node scripts/verify-release.js --tag vX.Y.Z         the release identity gate, BEFORE anything is
+                                                         built: tag = desktop/package.json (and its
+                                                         lock file) and the tag points at this commit
   -> dotnet test (Release)                       every automated layer, offline
   -> dotnet build EmailAI.slnx -c Release        must be 0 warnings / 0 errors
   -> dotnet publish src/EmailAI.Api -c Release -r win-x64 --self-contained true
@@ -663,15 +667,25 @@ source tree
                                                  (Electron shell in app.asar + resources/server/)
   -> node scripts/verify-secrets.js publish + packaged server
        -> fails on a secret value, a development-only appsettings file or a non-placeholder endpoint
-  -> verify the installer and the staged backend, then write <installer>.sha256
+  -> generate desktop/dist/RELEASE-NOTES.md      for this version, from the real commits since the
+                                                 previous release tag, with the real SHA-256
+  -> verify exactly one installer named for this version, its .sha256 written from that exact file,
+     the version embedded in the installer, and the notes - identical to
+     node scripts/verify-release.js --tag vX.Y.Z --dist dist --notes dist/RELEASE-NOTES.md
 ```
 
 `desktop/package.json` is the single source of truth: `version` names the installer
-(`build.nsis.artifactName` = `EmailAI-Setup-${version}.exe`, x64 only, per-user NSIS) and
-`desktop/scripts/release.js` reads both values instead of duplicating them. `desktop/dist/` and
+(`build.nsis.artifactName` = `EmailAI-Setup-${version}.exe`, x64 only, per-user NSIS), and the release
+tag must equal it. `desktop/scripts/release-version.js` resolves the version and the installer name
+and performs every check; `desktop/scripts/verify-release.js` is the same gate as a command (the
+release workflow runs it before the build and after the packaging), and
+`desktop/scripts/release-notes.js` generates the published release body. Nothing in the release path
+falls back to another version: a mismatch stops the release instead. `desktop/dist/` and
 `desktop/aspnet-publish/` are build output and are git-ignored - binaries are release assets, never
-committed. `.github/workflows/release.yml` runs the same pipeline for a `v*.*.*` tag (plus a
-source-tree scan) and attaches the installer and its checksum to the GitHub Release.
+committed. `.github/workflows/release.yml` runs the same pipeline for a `v*.*.*` tag (plus the
+source-tree scan, the identity gate and the artifact verification), uploads exactly the verified
+installer and checksum, and publishes them as assets of a GitHub Release titled `EmailAI <version>`
+whose body is the generated notes.
 
 ## Branch protection and PR CI
 
@@ -688,7 +702,8 @@ contributor fork / maintainer branch
   -> pull request against main
   -> .github/workflows/ci.yml  (windows-latest, job "Verify pull request")
        npm ci
-       -> node --check main.js | scripts/release.js | scripts/verify-secrets.js
+       -> node --check main.js | scripts/release.js | scripts/release-version.js |
+                     scripts/verify-release.js | scripts/release-notes.js | scripts/verify-secrets.js
        -> node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
        -> dotnet restore EmailAI.slnx
        -> dotnet build EmailAI.slnx -c Release
@@ -696,7 +711,8 @@ contributor fork / maintainer branch
   -> ruleset "main - pull request workflow": check green + branch up to date -> squash merge
   -> ruleset "main - integrity": no direct push, no force push, no deletion of main
   -> tag v*.*.* (maintainer)
-  -> .github/workflows/release.yml: installer, scan, checksum, release assets
+  -> .github/workflows/release.yml: tag/package identity gate, installer, scan, artifact + checksum
+      + installer-version + notes verification, release assets
 ```
 
 A pull request **never packages anything**: the NSIS toolchain, the installer, its checksum and the

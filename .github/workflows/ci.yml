@@ -65,6 +65,9 @@ jobs:
         run: |
           node --check main.js
           node --check scripts/release.js
+          node --check scripts/release-version.js
+          node --check scripts/verify-release.js
+          node --check scripts/release-notes.js
           node --check scripts/verify-secrets.js
 
       - name: Secret and packaging scan (source tree)
