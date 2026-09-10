@@ -282,6 +282,13 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
     /// <summary>Number of list queries served (lets tests assert on polling behaviour).</summary>
     public int ListCalls { get; private set; }
 
+    /// <summary>
+    /// Number of UPCOMING list queries that answer with a transient Exchange failure instead of
+    /// data. Lets a test prove that the UI retries a hiccup once (and still reports a real outage
+    /// after that).
+    /// </summary>
+    public int FailNextListCalls { get; set; }
+
     /// <summary>Every folder key that was listed, in call order.</summary>
     public List<string> RequestedFolders { get; } = [];
 
@@ -327,6 +334,14 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
     {
         ListCalls++;
         RequestedFolders.Add(folderKey);
+
+        if (FailNextListCalls > 0)
+        {
+            FailNextListCalls--;
+            throw new EmailAI.Application.Exceptions.ExchangeMailException(
+                EmailAI.Application.Exceptions.ExchangeMailErrorKind.Connectivity,
+                "Injected transient Exchange failure (test double).");
+        }
 
         var ordered = (_folders.TryGetValue(folderKey, out var list) ? list : [])
             .OrderByDescending(item => item.ReceivedAt)
@@ -382,3 +397,71 @@ internal static class TestOptions
             TimeoutSeconds = timeoutSeconds,
         };
 }
+
+/// <summary>
+/// Deterministic <see cref="EmailAI.Application.AI.IAiService"/> stand-in that records what each
+/// AI operation was asked for: which operation, the requested output language and the current
+/// user handed to it. Host tests use it to prove the language contract and the trusted-identity
+/// path without contacting a provider.
+/// </summary>
+internal sealed class RecordingAiService : EmailAI.Application.AI.IAiService
+{
+    private readonly List<(string Operation, EmailAI.Application.AI.AiLanguage Language, MailboxIdentity? CurrentUser)> _calls = [];
+
+    /// <summary>Every recorded call, in order.</summary>
+    public IReadOnlyList<(string Operation, EmailAI.Application.AI.AiLanguage Language, MailboxIdentity? CurrentUser)> Calls => _calls;
+
+    public Task<EmailAI.Application.AI.AiContent> SummarizeMessageAsync(
+        EmailMessage message,
+        EmailAI.Application.AI.AiLanguage language,
+        MailboxIdentity? currentUser,
+        CancellationToken cancellationToken)
+    {
+        _calls.Add(("summarize", language, currentUser));
+        return Task.FromResult(new EmailAI.Application.AI.AiContent("summary"));
+    }
+
+    public Task<EmailAI.Application.AI.AiContent> SummarizeThreadAsync(
+        IReadOnlyList<EmailMessage> messages,
+        EmailAI.Application.AI.AiLanguage language,
+        MailboxIdentity? currentUser,
+        CancellationToken cancellationToken)
+    {
+        _calls.Add(("thread-summarize", language, currentUser));
+        return Task.FromResult(new EmailAI.Application.AI.AiContent("thread summary"));
+    }
+
+    public Task<EmailAI.Application.AI.AiContent> SuggestReplyAsync(
+        EmailMessage target,
+        IReadOnlyList<EmailMessage> history,
+        EmailAI.Application.AI.AiLanguage language,
+        MailboxIdentity? currentUser,
+        CancellationToken cancellationToken)
+    {
+        _calls.Add(("suggest-reply", language, currentUser));
+        return Task.FromResult(new EmailAI.Application.AI.AiContent("suggestion"));
+    }
+
+    public Task<EmailAI.Application.AI.AiContent> GenerateReplyAsync(
+        EmailMessage target,
+        IReadOnlyList<EmailMessage> history,
+        EmailAI.Application.AI.AiLanguage language,
+        MailboxIdentity? currentUser,
+        CancellationToken cancellationToken)
+    {
+        _calls.Add(("generate-reply", language, currentUser));
+        return Task.FromResult(new EmailAI.Application.AI.AiContent("draft"));
+    }
+}
+
+/// <summary>
+/// Identity provider stand-in for host tests: returns one fixed identity, exactly like an
+/// Exchange-enabled host would after resolving the mailbox through the directory.
+/// </summary>
+internal sealed class StubMailboxIdentityProvider(MailboxIdentity identity)
+    : EmailAI.Application.Exchange.IMailboxIdentityProvider
+{
+    public Task<MailboxIdentity> GetCurrentUserAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult(identity);
+}
+

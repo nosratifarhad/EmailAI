@@ -177,11 +177,11 @@ public class AiPromptsTests
         var system = request.Messages[0].Content;
 
         Assert.Contains("CURRENT USER", system, StringComparison.Ordinal);
-        Assert.Contains("Farhad Nosrati", system, StringComparison.Ordinal);
-        Assert.Contains("farhad@contoso.com", system, StringComparison.Ordinal);
-        // Aliases come from the authoritative identity, so "ask Farhad" is understood.
+        Assert.Contains("Alex Doe", system, StringComparison.Ordinal);
+        Assert.Contains("alex@contoso.com", system, StringComparison.Ordinal);
+        // Aliases come from the authoritative identity, so "ask Alex" is understood.
         Assert.Contains("May also be referred to as:", system, StringComparison.Ordinal);
-        Assert.Contains("Farhad", system, StringComparison.Ordinal);
+        Assert.Contains("Alex", system, StringComparison.Ordinal);
         // The draft is written AS the user and addresses the other participants.
         Assert.Contains("you write AS the current user", system, StringComparison.Ordinal);
     }
@@ -196,9 +196,9 @@ public class AiPromptsTests
 
         Assert.Contains("established from their", system, StringComparison.Ordinal);
         Assert.Contains("not from the email text", system, StringComparison.Ordinal);
-        Assert.Contains("Farhad Nosrati", system, StringComparison.Ordinal);
+        Assert.Contains("Alex Doe", system, StringComparison.Ordinal);
         // The identity is never part of the fenced (untrusted) email data.
-        Assert.DoesNotContain("Farhad Nosrati", user, StringComparison.Ordinal);
+        Assert.DoesNotContain("Alex Doe", user, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -226,7 +226,7 @@ public class AiPromptsTests
         var system = request.Messages[0].Content;
         var user = request.Messages[1].Content;
 
-        Assert.Contains("Farhad Nosrati", system, StringComparison.Ordinal);
+        Assert.Contains("Alex Doe", system, StringComparison.Ordinal);
         Assert.Contains("Sara Ahmadi", user, StringComparison.Ordinal);
         Assert.Contains("If the email content and", system, StringComparison.Ordinal);
         Assert.Contains("follow this identity", system, StringComparison.Ordinal);
@@ -248,9 +248,9 @@ public class AiPromptsTests
     /// The authoritative current user, as resolved from the authenticated Exchange mailbox.
     /// </summary>
     private static MailboxIdentity CurrentUser() => MailboxIdentity.Create(
-        "Farhad Nosrati",
-        "farhad@contoso.com",
-        "farhad",
+        "Alex Doe",
+        "alex@contoso.com",
+        "alex",
         MailboxIdentity.ExchangeDirectorySource);
 
     private static EmailMessage Message(

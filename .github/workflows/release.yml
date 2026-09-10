@@ -1,0 +1,104 @@
+# EmailAI Windows release pipeline.
+#
+# Triggers:
+#   * a version tag push (v1.2.3)  -> build, test, scan, package and publish the installer
+#   * manual dispatch              -> same pipeline, optionally publishing a draft
+#
+# It runs exactly the commands documented in the README ("Windows release"), so a local
+# `cd desktop && npm run release` and this workflow cannot drift apart. The pipeline itself
+# (scripts/release.js) runs .NET tests -> build -> self-contained publish -> NSIS package ->
+# scan (secrets, development-only config, non-placeholder endpoints) -> installer + SHA-256
+# verification, and this workflow only adds the source-tree scan before it and the artifact
+# and release upload after it.
+#
+# Secrets: none are required to build. If a code-signing certificate is added later, pass it
+# through CSC_LINK/CSC_KEY_PASSWORD as repository secrets - this workflow never echoes them and
+# never prints environment dumps.
+
+name: Release (Windows installer)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release with the installer'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Build Windows x64 installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Electron toolchain
+        run: npm ci
+
+      - name: Restore solution
+        working-directory: .
+        run: dotnet restore EmailAI.slnx
+
+      - name: Secret and packaging scan (source tree)
+        run: node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
+
+      - name: Tests, build, publish, package, scan and verify (npm run release)
+        run: npm run release
+
+      - name: Verify installer artifact and checksum
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $installer = Join-Path 'dist' "EmailAI-Setup-$version.exe"
+          $checksum = "$installer.sha256"
+          if (-not (Test-Path $installer)) { throw "installer was not produced: $installer" }
+          if (-not (Test-Path $checksum)) { throw "checksum file was not produced: $checksum" }
+          $sizeMb = [math]::Round((Get-Item $installer).Length / 1MB, 1)
+          Write-Host "installer: $installer ($sizeMb MB)"
+          Get-FileHash $installer -Algorithm SHA256 | Format-List
+          Get-Content $checksum
+
+      - name: Upload installer as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EmailAI-Setup-Windows-x64
+          path: |
+            desktop/dist/EmailAI-Setup-*.exe
+            desktop/dist/EmailAI-Setup-*.exe.sha256
+            desktop/dist/EmailAI-Setup-*.exe.blockmap
+          if-no-files-found: error
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/dist/EmailAI-Setup-*.exe
+            desktop/dist/EmailAI-Setup-*.exe.sha256
+          body_path: RELEASE-NOTES.md
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          fail_on_unmatched_files: true

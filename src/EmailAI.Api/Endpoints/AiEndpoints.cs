@@ -82,11 +82,19 @@ public static class AiEndpoints
         }
 
         itemId = DecodeRouteItemId(itemId);
+
+        // An unusable language is a caller error (400 with a message), never a silent fallback
+        // to Auto and never an unexplained empty 400 from the JSON binder.
+        if (!AiLanguageRequest.TryResolve(request, out var language, out var languageError))
+        {
+            return Results.BadRequest(new { error = languageError });
+        }
+
         var logger = loggerFactory.CreateLogger("EmailAI.Api.AiEndpoints");
         var message = await mail.GetMessageAsync(itemId, cancellationToken);
         var currentUser = await identity.GetCurrentUserAsync(cancellationToken);
         var content = await ai.SummarizeMessageAsync(
-            message, Language(request), currentUser, cancellationToken);
+            message, language, currentUser, cancellationToken);
         logger.LogInformation("AI summary produced for message {ItemId}.", itemId);
         return Results.Ok(new AiContentResult { Content = content.Content });
     }
@@ -106,6 +114,12 @@ public static class AiEndpoints
         }
 
         itemId = DecodeRouteItemId(itemId);
+
+        if (!AiLanguageRequest.TryResolve(request, out var language, out var languageError))
+        {
+            return Results.BadRequest(new { error = languageError });
+        }
+
         var logger = loggerFactory.CreateLogger("EmailAI.Api.AiEndpoints");
         var thread = await mail.GetThreadAsync(itemId, cancellationToken);
         if (thread.Messages.Count == 0)
@@ -120,7 +134,7 @@ public static class AiEndpoints
         }
 
         var content = await ai.SummarizeThreadAsync(
-            messages, Language(request), await identity.GetCurrentUserAsync(cancellationToken), cancellationToken);
+            messages, language, await identity.GetCurrentUserAsync(cancellationToken), cancellationToken);
         logger.LogInformation(
             "AI thread summary produced for conversation {ConversationId} ({Loaded}/{Total} messages).",
             thread.ConversationId ?? "(none)", messages.Count, thread.TotalCount);
@@ -173,6 +187,13 @@ public static class AiEndpoints
 
         itemId = DecodeRouteItemId(itemId);
 
+        // Resolved before any Exchange round trip: an unusable language costs nothing but a
+        // descriptive 400 and can never leave a half-done operation behind.
+        if (!AiLanguageRequest.TryResolve(request, out var language, out var languageError))
+        {
+            return Results.BadRequest(new { error = languageError });
+        }
+
         // The email being replied to is the item the user is looking at.
         var target = await mail.GetMessageAsync(itemId, cancellationToken);
 
@@ -197,17 +218,14 @@ public static class AiEndpoints
         }
 
         var content = generate
-            ? await ai.GenerateReplyAsync(target, history, Language(request), currentUser, cancellationToken)
-            : await ai.SuggestReplyAsync(target, history, Language(request), currentUser, cancellationToken);
+            ? await ai.GenerateReplyAsync(target, history, language, currentUser, cancellationToken)
+            : await ai.SuggestReplyAsync(target, history, language, currentUser, cancellationToken);
 
         logger.LogInformation(
             "AI {Operation} produced for message {ItemId} ({HistoryCount} context messages).",
             new object?[] { generate ? "draft" : "suggestion", itemId, history.Count });
         return Results.Ok(new AiContentResult { Content = content.Content });
     }
-
-    private static AiLanguage Language(AiOperationRequest? request)
-        => request?.Language ?? AiLanguage.Auto;
 
     /// <summary>
     /// Loads the full bodies of a conversation in chronological order (oldest first)

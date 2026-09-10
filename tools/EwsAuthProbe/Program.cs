@@ -1,36 +1,40 @@
 using System.Diagnostics;
 using Microsoft.Exchange.WebServices.Data;
 
-// Live authentication probe - EmailAI diagnostics.
+// Live diagnostics probe - EmailAI Exchange connectivity.
 //
-// Purpose: reproduce the two independent Exchange authentication modes the
-// production service supports so a failing connection can be classified without
-// guessing:
-//   * default-credentials mode (Windows mode - Windows Integrated Authentication,
-//     current process identity);
-//   * explicit account mode (UsernamePassword mode - WebCredentials from
-//     EWS_DOMAIN / EWS_USERNAME / EWS_PASSWORD).
+// Purpose: reproduce the two Exchange authentication modes the production service supports, so
+// a failing connection can be classified without guessing:
+//   * Windows mode          - UseDefaultCredentials (Windows Integrated Authentication, the
+//                             current process identity). No username/password is used and
+//                             nothing is ever retried with another credential mechanism.
+//   * UsernamePassword mode - WebCredentials built from EWS_DOMAIN / EWS_USERNAME /
+//                             EWS_PASSWORD (one explicit account, no Windows identity).
 //
-// This probe NEVER prints a password or an Authorization header: explicit credentials
-// are read from environment variables only and the mode line shows the account name
-// without the secret.
+// This probe NEVER prints a password or an Authorization header: explicit credentials come from
+// environment variables only, and the mode line shows the account name without the secret.
 //
-// NOTE: this probe tests each path in isolation, exactly like the EmailAI backend
-// which uses ONE explicitly configured Exchange authentication mode per operation
-// (Exchange:Authentication=Windows or UsernamePassword - see ExchangeAuthRunner).
-// There is no automatic fallback between the two modes in the production service;
-// the probe's EWS_* variables are its own diagnostic interface (the backend reads
-// EXCHANGE_*).
+// Optional second capability: EWS_RESOLVE resolves one or more names through the Exchange
+// DIRECTORY (ResolveNames, DirectoryOnly) and prints the display name and SMTP address the
+// server returns. It exists because EmailAI's current-user identity is only authoritative when
+// that lookup succeeds, and the answer depends on the form of the name that is sent
+// ("DOMAIN\user" versus the bare account name). Only non-secret directory data is printed.
+//
+// NOTE: like the backend, this probe uses exactly ONE explicitly configured mode per run
+// (there is no automatic fallback between them - see ExchangeAuthRunner). EWS_* variables are
+// this tool's own diagnostic interface; the backend reads EXCHANGE_*.
 //
 // Run:  dotnet run --project tools/EwsAuthProbe
 // Env:  EWS_URL (required)   - e.g. https://mail.example.com/EWS/Exchange.asmx
-//       EWS_AUTH             - optional: "windows" (default) or "ntlm"
-//       EWS_DOMAIN           - NTLM domain (optional, used with EWS_AUTH=ntlm)
-//       EWS_USERNAME         - NTLM account (required with EWS_AUTH=ntlm)
-//       EWS_PASSWORD         - NTLM password (required with EWS_AUTH=ntlm; never printed)
+//       EWS_AUTH             - optional: "windows" (default) or "usernamepassword"
+//       EWS_DOMAIN           - domain (optional, used with EWS_AUTH=usernamepassword)
+//       EWS_USERNAME         - account (required with EWS_AUTH=usernamepassword)
+//       EWS_PASSWORD         - password (required with EWS_AUTH=usernamepassword; never printed)
+//       EWS_RESOLVE          - optional: "name1;name2" to resolve through the directory instead
+//                              of probing the root folder
 //
-// Exit code 0 when the probe authenticated; 1 otherwise (the printed error is a safe
-// classification, never a credential).
+// Exit code 0 when the probe succeeded; 1 when it failed; 2 on a usage error. Printed errors are
+// a safe classification, never a credential.
 
 static class Program
 {
@@ -59,7 +63,9 @@ static class Program
             UserAgent = "EmailAI-AuthProbe/1.0",
         };
 
-        if (auth.Equals("ntlm", StringComparison.OrdinalIgnoreCase))
+        if (auth.Equals("usernamepassword", StringComparison.OrdinalIgnoreCase)
+            || auth.Equals("username-password", StringComparison.OrdinalIgnoreCase)
+            || auth.Equals("username_password", StringComparison.OrdinalIgnoreCase))
         {
             var userName = Environment.GetEnvironmentVariable("EWS_USERNAME");
             var domain = Environment.GetEnvironmentVariable("EWS_DOMAIN");
@@ -67,19 +73,30 @@ static class Program
 
             if (string.IsNullOrWhiteSpace(userName) || password is null)
             {
-                Console.WriteLine("EWS_AUTH=ntlm requires EWS_USERNAME and EWS_PASSWORD (EWS_DOMAIN optional).");
+                Console.WriteLine("EWS_AUTH=usernamepassword requires EWS_USERNAME and EWS_PASSWORD (EWS_DOMAIN optional).");
                 return 2;
             }
 
-            Console.WriteLine($"Auth mode        : explicit NTLM as {(string.IsNullOrWhiteSpace(domain) ? string.Empty : domain + "\\")}{userName} (password from the environment, never printed)");
+            Console.WriteLine($"Auth mode        : explicit account {(string.IsNullOrWhiteSpace(domain) ? string.Empty : domain + "\\")}{userName} (password from the environment, never printed)");
             service.Credentials = string.IsNullOrWhiteSpace(domain)
                 ? new WebCredentials(userName, password)
                 : new WebCredentials(userName, password, domain);
         }
+        else if (auth.Equals("windows", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("Auth mode        : UseDefaultCredentials = true (Windows Integrated, no fallback)");
+            service.UseDefaultCredentials = true;
+        }
         else
         {
-            Console.WriteLine("Auth mode        : UseDefaultCredentials = true (Windows Integrated)");
-            service.UseDefaultCredentials = true;
+            Console.WriteLine($"EWS_AUTH must be 'windows' or 'usernamepassword' (received '{auth}').");
+            return 2;
+        }
+
+        var resolveNames = Environment.GetEnvironmentVariable("EWS_RESOLVE");
+        if (!string.IsNullOrWhiteSpace(resolveNames))
+        {
+            return await ResolveAsync(service, resolveNames);
         }
 
         try
@@ -96,6 +113,58 @@ static class Program
             DumpChain(exception, 0);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Resolves each candidate through the Exchange directory and prints the display name and
+    /// SMTP address the server returned (non-secret data only). Confirms whether an identity
+    /// lookup can make the current user authoritative for a given name form.
+    /// </summary>
+    private static async Task<int> ResolveAsync(ExchangeService service, string candidates)
+    {
+        var failed = 0;
+        foreach (var raw in candidates.Split([';', ','], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = raw.Trim();
+            if (candidate.Length == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                var resolutions = await service.ResolveName(
+                    candidate,
+                    ResolveNameSearchLocation.DirectoryOnly,
+                    returnContactDetails: true,
+                    new PropertySet(BasePropertySet.FirstClassProperties));
+
+                if (resolutions.Count == 0)
+                {
+                    Console.WriteLine($"RESOLVE '{candidate}': NO RESULTS");
+                    failed++;
+                    continue;
+                }
+
+                for (var index = 0; index < resolutions.Count; index++)
+                {
+                    var resolution = resolutions[index];
+                    var name = resolution.Mailbox?.Name ?? resolution.Contact?.DisplayName ?? "(no name)";
+                    var address = resolution.Mailbox?.Address ?? "(no address)";
+                    Console.WriteLine($"RESOLVE '{candidate}' [{index}]: {name} <{address}>");
+                }
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"RESOLVE '{candidate}': FAILED - {Classify(exception)}");
+                failed++;
+            }
+        }
+
+        Console.WriteLine(failed == 0
+            ? "RESULT: OK - every candidate resolved through the Exchange directory."
+            : $"RESULT: PARTIAL - {failed} candidate(s) did not resolve.");
+        return failed == 0 ? 0 : 1;
     }
 
     private static string Classify(Exception exception)

@@ -63,6 +63,39 @@ public sealed class InitialInboxLoadTests : IClassFixture<SettingsHostFactory>
         Assert.DoesNotContain("could not be loaded.", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RootPage_RetriesOneTransientConnectionFailure_BeforeShowingAnError()
+    {
+        var mail = new FakeExchangeMailService();
+        mail.Add("inbox", "id-1", T0, subject: "Quarterly report");
+        mail.FailNextListCalls = 1;
+
+        var client = CreateClient(mail);
+
+        var html = await client.GetStringAsync("/");
+
+        // The first paint still carries the Inbox: one transparent retry, no user action, no delay.
+        Assert.Contains("Quarterly report", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("could not be loaded.", html, StringComparison.Ordinal);
+        Assert.Equal(2, mail.ListCalls);
+    }
+
+    [Fact]
+    public async Task RootPage_AfterTwoFailures_ReportsTheRealError()
+    {
+        var mail = new FakeExchangeMailService();
+        mail.Add("inbox", "id-1", T0, subject: "Quarterly report");
+        mail.FailNextListCalls = 2;
+
+        var client = CreateClient(mail);
+
+        var html = await client.GetStringAsync("/");
+
+        Assert.DoesNotContain("message-row", html, StringComparison.Ordinal);
+        Assert.Contains("Exchange connection failed", html, StringComparison.Ordinal);
+        Assert.Equal(2, mail.ListCalls);
+    }
+
     /// <summary>
     /// Creates a client for the real host with in-memory Exchange. The prerendering page calls
     /// the application's own REST API with an HttpClient whose base address is the request's
