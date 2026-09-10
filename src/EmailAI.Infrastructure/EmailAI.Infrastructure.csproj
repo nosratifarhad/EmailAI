@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>EmailAI.Infrastructure</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Actively maintained fork of the official EWS Managed API that builds for
+      .NET (net8.0/net9.0/net10.0). Same namespace/API surface as the original:
+      Microsoft.Exchange.WebServices.Data.
+    -->
+    <PackageReference Include="Exchange.WebServices.NETCore" Version="3.3.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EmailAI.Application\EmailAI.Application.csproj" />
+    <ProjectReference Include="..\EmailAI.Domain\EmailAI.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The mail service consumes IOptionsMonitor<T> and ILogger<T>. Those live in
+      the ASP.NET Core shared framework, which the API host already provides.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Unit tests exercise the internal Exchange authentication-fallback seam
+      (ExchangeAuthRetry / ExchangeServiceFactory) without touching the network.
+    -->
+    <InternalsVisibleTo Include="EmailAI.Tests" />
+  </ItemGroup>
+
+</Project>

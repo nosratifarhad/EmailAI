@@ -1,0 +1,1318 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+
+<PageTitle>@_folder.Label · EmailAI</PageTitle>
+
+<div class="mail-shell @MobileViewClass">
+
+    @* ---- Non-blocking AI readiness hint (never hides the mail UI) ---- *@
+    @if (_aiReadiness is { Ready: false } readiness)
+    {
+        <div class="banner banner-warn mail-ai-banner" role="status">
+            <strong>@readiness.Message</strong>
+            @if (readiness.CanOpenSettings)
+            {
+                <button type="button" class="btn-primary" @onclick="OpenSettings">@readiness.Action</button>
+            }
+        </div>
+    }
+
+    @* ---- Folders pane ------------------------------------------------- *@
+    <aside class="mail-pane pane-folders">
+        <div class="pane-toolbar">
+            <button type="button" class="icon-btn mobile-only" @onclick="ShowList" title="Back to messages" aria-label="Back to messages">‹</button>
+            <span class="pane-title">Folders</span>
+        </div>
+        <nav class="folder-list" aria-label="Mail folders">
+            @foreach (var folder in Folders)
+            {
+                <button type="button"
+                        class="folder-item @(folder == _folder ? "active" : null)"
+                        @key="folder.Key"
+                        @onclick="() => SelectFolderAsync(folder)">
+                    <span class="folder-label">@folder.Label</span>
+                </button>
+            }
+        </nav>
+        <div class="pane-footer">
+            <span class="hint">Connected through Exchange Web Services</span>
+        </div>
+    </aside>
+
+    @* ---- Message list pane ------------------------------------------- *@
+    <section class="mail-pane pane-list">
+        <div class="pane-toolbar">
+            <button type="button" class="icon-btn mobile-only" @onclick="ShowFolders" title="Show folders" aria-label="Show folders">☰</button>
+            <span class="pane-title">@_folder.Label</span>
+            <span class="pane-toolbar-spacer"></span>
+            <button type="button" class="icon-btn" title="Refresh this folder" aria-label="Refresh this folder" @onclick="RefreshAsync">⟳</button>
+        </div>
+
+        <div class="pane-subbar">
+            @if (!_messagesLoading && _listError is null && _totalCount > 0)
+            {
+                <span class="count-text">@(_offset + 1)–@(_offset + _messages.Count) of @_totalCount</span>
+                <span class="pane-toolbar-spacer"></span>
+                <button type="button" class="mini-btn" disabled="@(_offset <= 0)" @onclick="GoNewerAsync">‹ Newer</button>
+                <button type="button" class="mini-btn" disabled="@(!_hasMore)" @onclick="GoOlderAsync">Older ›</button>
+            }
+        </div>
+
+        <div class="pane-scroll list-body">
+            @if (_messagesLoading)
+            {
+                <LoadingState Text="Loading messages…" />
+            }
+            else if (_listError is not null)
+            {
+                <div class="banner banner-error" role="alert">
+                    <strong>@_folder.Label could not be loaded.</strong>
+                    <p>@_listError</p>
+                    <button type="button" class="mini-btn" @onclick="RefreshAsync">Try again</button>
+                </div>
+            }
+            else if (_messages.Count == 0)
+            {
+                <div class="empty-state">
+                    <p><strong>@_folder.Label is empty.</strong></p>
+                    <p class="hint">When Exchange is connected, messages appear here.</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var item in _messages)
+                {
+                    <button type="button"
+                            class="message-row @(_detail?.Id == item.Id ? "selected" : null) @(item.IsRead ? null : "unread")"
+                            @key="item.Id"
+                            @onclick="() => OpenMessageAsync(item.Id)">
+                        <span class="row-line-1">
+                            <span class="row-name">@RowName(item)</span>
+                            <span class="row-date">@FormatShortDate(item.ReceivedAt)</span>
+                        </span>
+                        <span class="row-line-2">
+                            <span class="row-subject">@(string.IsNullOrWhiteSpace(item.Subject) ? "(no subject)" : item.Subject)</span>
+                            @if (item.Importance == EmailImportance.High)
+                            {
+                                <span class="high-badge" title="High importance" aria-label="High importance">!</span>
+                            }
+                        </span>
+                        <span class="row-line-3">
+                            <span class="row-meta">@RowAddresses(item)</span>
+                            @if (item.HasAttachments)
+                            {
+                                <span class="attach-mark" title="Has attachments" aria-hidden="true">📎</span>
+                            }
+                        </span>
+                    </button>
+                }
+            }
+        </div>
+    </section>
+
+    @* ---- Reading pane ------------------------------------------------- *@
+    <section class="mail-pane pane-detail">
+        <div class="detail-toolbar">
+            <button type="button" class="icon-btn mobile-only" @onclick="ShowList" title="Back to messages" aria-label="Back to messages">‹</button>
+            <h1 class="detail-subject">@(subject)</h1>
+            <span class="pane-toolbar-spacer"></span>
+            @if (_detail is not null && !string.IsNullOrEmpty(_detail.ConversationId))
+            {
+                <button type="button"
+                        class="mini-btn @(_threadView ? "mini-active" : null)"
+                        disabled="@_threadLoading"
+                        @onclick="ToggleThreadAsync">
+                    @(_threadView ? "Show message" : "Conversation")
+                </button>
+            }
+        </div>
+
+        <div class="pane-scroll detail-body">
+            @if (_detail is null && _detailError is null && !_detailLoading)
+            {
+                <div class="detail-placeholder">
+                    <p><strong>Select a message</strong></p>
+                    <p class="hint">Choose a message from the list to read it here.</p>
+                </div>
+            }
+            else if (_detailLoading)
+            {
+                <LoadingState Text="Loading message…" />
+            }
+            else if (_detailError is not null)
+            {
+                <div class="banner banner-error" role="alert">
+                    <strong>The message could not be opened.</strong>
+                    <p>@_detailError</p>
+                    <button type="button" class="mini-btn" @onclick="RetryDetailAsync">Try again</button>
+                </div>
+            }
+            else if (_detail is not null)
+            {
+                @if (_threadView)
+                {
+                    @* Conversation timeline (chronological, as returned by the API). *@
+                    <section class="thread-block" aria-label="Conversation">
+                        <div class="thread-head">
+                            <div class="thread-topic">@(_thread?.Topic ?? (_detail.ConversationTopic ?? "Conversation"))</div>
+                            @if (_thread is not null)
+                            {
+                                <span class="thread-count">@_thread.TotalCount @(_thread.TotalCount == 1 ? "message" : "messages")</span>
+                            }
+                            <span class="pane-toolbar-spacer"></span>
+                            <button type="button" class="mini-btn" title="Reload conversation" aria-label="Reload conversation"
+                                    disabled="@_threadLoading" @onclick="ReloadThreadAsync">↻</button>
+                        </div>
+
+                        @if (_threadLoading)
+                        {
+                            <LoadingState Text="Loading conversation…" />
+                        }
+                        else if (_threadError is not null)
+                        {
+                            <div class="banner banner-warn" role="alert">
+                                <strong>The conversation could not be loaded.</strong>
+                                <p>@_threadError</p>
+                                <button type="button" class="mini-btn" @onclick="ReloadThreadAsync">Try again</button>
+                            </div>
+                        }
+                        else if (_thread is not null && _thread.Messages.Count > 0)
+                        {
+                            <ol class="thread-list">
+                                @foreach (var threadItem in _thread.Messages)
+                                {
+                                    var depth = Math.Clamp(threadItem.Depth, 0, 6);
+                                    <li class="thread-row depth-@depth @(_detail.Id == threadItem.Id ? "current" : null)" @key="threadItem.Id">
+                                        <button type="button" class="thread-row-button" @onclick="() => OpenThreadItemAsync(threadItem)">
+                                            <span class="avatar avatar-sm" aria-hidden="true">@Initials(threadItem.From)</span>
+                                            <span class="thread-main">
+                                                <span class="row-line-1">
+                                                    <span class="thread-name">@DisplayName(threadItem.From)</span>
+                                                    <span class="row-date">@FormatDateTime(threadItem.ReceivedAt)</span>
+                                                </span>
+                                                <span class="row-subject">@(string.IsNullOrWhiteSpace(threadItem.Subject) ? "(no subject)" : threadItem.Subject)</span>
+                                            </span>
+                                        </button>
+                                    </li>
+                                }
+                            </ol>
+                        }
+                        else
+                        {
+                            <div class="empty-state">
+                                <p>No messages found in this conversation.</p>
+                            </div>
+                        }
+                    </section>
+                }
+
+                @* The focused message. *@
+                <article class="message-card">
+                    <header class="mc-header">
+                        <div class="mc-identity">
+                            <span class="avatar avatar-lg" aria-hidden="true">@Initials(_detail.From)</span>
+                            <div class="mc-who">
+                                <div class="mc-name">@DisplayName(_detail.From)</div>
+                                @if (!string.IsNullOrWhiteSpace(_detail.From?.Address))
+                                {
+                                    <div class="mc-address">@_detail.From!.Address</div>
+                                }
+                            </div>
+                        </div>
+                        <div class="mc-date">@FormatDateTime(_detail.SentAt ?? _detail.ReceivedAt)</div>
+                    </header>
+
+                    <dl class="mc-meta">
+                        <MetaRow Label="From" Value="@(_detail.From?.ToString() ?? "")" />
+                        <MetaRow Label="To" Value="@JoinFormatted(_detail.To)" />
+                        @if (_detail.Cc.Count > 0)
+                        {
+                            <MetaRow Label="Cc" Value="@JoinFormatted(_detail.Cc)" />
+                        }
+                        @if (_detail.Bcc.Count > 0)
+                        {
+                            <MetaRow Label="Bcc" Value="@JoinFormatted(_detail.Bcc)" />
+                        }
+                    </dl>
+
+                    @if (_detail.Attachments.Count > 0)
+                    {
+                        <div class="attachments">
+                            <div class="attachments-title">Attachments (metadata only)</div>
+                            <ul class="attachment-list">
+                                @foreach (var attachment in _detail.Attachments)
+                                {
+                                    <li class="attachment-chip" @key="attachment.Id" title="@(attachment.ContentType ?? "Attachment")">
+                                        <span class="attachment-name">@(string.IsNullOrWhiteSpace(attachment.Name) ? "unnamed" : attachment.Name)</span>
+                                        <span class="attachment-size">@FormatSize(attachment.Size)</span>
+                                        @if (attachment.IsInline)
+                                        {
+                                            <span class="attachment-inline">inline</span>
+                                        }
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
+
+                    @if (_detail.BodyHtml is not null && _detail.BodyText is not null)
+                    {
+                        <div class="body-switch" role="group" aria-label="Body format">
+                            <button type="button" class="mini-btn @(_bodyView == BodyView.Text ? "mini-active" : null)" @onclick="() => _bodyView = BodyView.Text">Text</button>
+                            <button type="button" class="mini-btn @(_bodyView == BodyView.Html ? "mini-active" : null)" @onclick="() => _bodyView = BodyView.Html">HTML</button>
+                        </div>
+                    }
+
+                    @if (_detail.BodyText is { Length: > 0 } &&
+                         (_bodyView == BodyView.Text || _detail.BodyHtml is null))
+                    {
+                        <div class="body-text">@_detail.BodyText</div>
+                    }
+                    else if (_detail.BodyHtml is { Length: > 0 })
+                    {
+                        @* Email HTML is untrusted: it is sanitised AND rendered inside a
+                           script-less sandboxed frame with a restrictive CSP, so it can never
+                           script the application or reach the page it is embedded in. *@
+                        <iframe class="body-html-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"
+                                referrerpolicy="no-referrer" title="Message body (HTML)"
+                                srcdoc="@MailHtmlSanitizer.ToSandboxDocument(_detail.BodyHtml)"></iframe>
+                    }
+                    else
+                    {
+                        <div class="body-empty">This message has no body.</div>
+                    }
+                </article>
+
+                @* AI assistant - calls stay on the server (server-side AI). Results are text
+                   only and are NEVER sent automatically; sending keeps going through
+                   the existing reply panel below (POST /api/messages/{id}/reply). *@
+                <div class="ai-panel">
+                    <div class="ai-head">
+                        <span class="ai-title">✨ AI assistant</span>
+                        <span class="pane-toolbar-spacer"></span>
+                        <span class="ai-actions">
+                            <button type="button" class="ai-btn" title="Summarize this message"
+                                    disabled="@AiActionsDisabled"
+                                    @onclick="() => RunAiAsync(AiTask.SummarizeMessage)">Summarize</button>
+                            <button type="button" class="ai-btn" title="Summarize the whole conversation"
+                                    disabled="@AiActionsDisabled || string.IsNullOrEmpty(_detail.ConversationId)"
+                                    @onclick="() => RunAiAsync(AiTask.SummarizeThread)">Summarize thread</button>
+                            <button type="button" class="ai-btn" title="Ask how to answer this message"
+                                    disabled="@AiActionsDisabled"
+                                    @onclick="() => RunAiAsync(AiTask.SuggestReply)">Suggest reply</button>
+                            <button type="button" class="ai-btn" title="Write an editable draft reply"
+                                    disabled="@AiActionsDisabled"
+                                    @onclick="() => RunAiAsync(AiTask.GenerateReply)">Generate reply</button>
+                        </span>
+                    </div>
+
+                    <div class="ai-body">
+                        @if (_aiReadiness is { Ready: false } notReady)
+                        {
+                            @* AI is not usable yet: say what is missing and where to fix it,
+                               instead of running a request that is guaranteed to fail. *@
+                            <div class="banner banner-warn ai-not-ready" role="alert">
+                                <strong>@notReady.Message</strong>
+                                <span class="ai-not-ready-actions">
+                                    @if (notReady.CanOpenSettings)
+                                    {
+                                        <button type="button" class="btn-primary" @onclick="OpenSettings">@notReady.Action</button>
+                                    }
+                                    <button type="button" class="mini-btn" @onclick="RefreshAiReadinessAsync">Check again</button>
+                                </span>
+                            </div>
+                        }
+                        else if (_aiBusy)
+                        {
+                            <div class="ai-state">
+                                <LoadingState Text="@AiBusyLabel" />
+                                <button type="button" class="mini-btn" @onclick="CancelAi">Cancel</button>
+                            </div>
+                        }
+                        else if (_aiError is not null)
+                        {
+                            <div class="banner banner-warn" role="alert">
+                                <strong>@_aiError</strong>
+                                <span class="ai-not-ready-actions">
+                                    @if (_aiErrorCanOpenSettings)
+                                    {
+                                        <button type="button" class="btn-primary" @onclick="OpenSettings">Open Settings</button>
+                                    }
+                                    @if (_aiTask != AiTask.None)
+                                    {
+                                        <button type="button" class="mini-btn" @onclick="RetryAiAsync">Retry</button>
+                                    }
+                                </span>
+                            </div>
+                        }
+                        else if (_aiContent is not null)
+                        {
+                            <div class="ai-result">
+                                <div class="ai-result-head">
+                                    <span class="ai-result-label">@AiResultLabel</span>
+                                    <span class="pane-toolbar-spacer"></span>
+                                    @if (_aiTask == AiTask.SuggestReply && !_aiInserted)
+                                    {
+                                        <button type="button" class="mini-btn" @onclick="InsertAiReplyIntoComposer">Insert into reply box</button>
+                                    }
+                                    <button type="button" class="mini-btn" @onclick="ClearAiResult" title="Dismiss this AI result">✕</button>
+                                </div>
+                                @* Writing direction follows the chosen response language
+                                   (Persian = RTL + right aligned, English = LTR). *@
+                                <div class="ai-text" dir="@_aiDirection" style="text-align:@_aiTextAlign">@_aiContent</div>
+                                @if (_aiInserted)
+                                {
+                                    <p class="ai-note" role="status">Draft inserted into the reply box below — review and edit it. Nothing is sent until you press “Send reply”.</p>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="ai-idle">
+                                <span class="hint">Summarize this message or the whole conversation, or ask the AI to suggest or draft a reply. AI calls run on the server, and AI never sends email by itself.</span>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="ai-foot">
+                        <label class="ai-lang">
+                            Response language
+                            <select value="@_aiLanguage" @onchange="OnAiLanguageChanged">
+                                <option value="Auto">Auto (same as email)</option>
+                                <option value="English">English</option>
+                                <option value="Persian">Persian (فارسی)</option>
+                            </select>
+                        </label>
+                        <span class="hint">Output follows the email language unless you choose otherwise.</span>
+                    </div>
+                </div>
+
+                @* Reply UI - sending is always performed by the backend ReplyAsync. *@
+                <div class="reply-panel">
+                    <div class="reply-head">
+                        <span class="reply-title">Reply @(_replyAll ? "to all" : "")</span>
+                        <label class="reply-all-toggle">
+                            <input type="checkbox" @bind="_replyAll" disabled="@_sending" />
+                            <span>Reply to all</span>
+                        </label>
+                    </div>
+
+                    @if (_replyResult is not null)
+                    {
+                        <div class="banner banner-success" role="status">
+                            <span><strong>Reply sent.</strong></span>
+                            @if (_replyResult.Verification is { Found: true })
+                            {
+                                <span>A copy was saved in Sent Items.</span>
+                            }
+                            @if (_replyResult.SentAt is { } sentAt)
+                            {
+                                <span>Sent @FormatDateTime(sentAt).</span>
+                            }
+                            <button type="button" class="banner-dismiss" title="Dismiss" aria-label="Dismiss" @onclick="DismissReplyResult">✕</button>
+                        </div>
+                    }
+
+                    @if (_replyError is not null)
+                    {
+                        <div class="banner banner-error" role="alert">
+                            <strong>The reply could not be sent. Nothing was sent.</strong>
+                            <p>@_replyError</p>
+                        </div>
+                    }
+
+                    <textarea class="reply-box" rows="7"
+                              dir="@_replyDirection"
+                              placeholder="Write your reply. Nothing is sent until you press Send."
+                              @bind="_replyBody"
+                              disabled="@_sending"></textarea>
+
+                    <div class="reply-actions">
+                        <button type="button" class="btn btn-primary"
+                                disabled="@(_sending || string.IsNullOrWhiteSpace(_replyBody))"
+                                @onclick="SendReplyAsync">
+                            @(_sending ? "Sending…" : "Send reply")
+                        </button>
+                        <span class="hint">Plain text is sent as HTML with line breaks preserved.</span>
+                    </div>
+                </div>
+
+
+            }
+        </div>
+    </section>
+
+</div>
+
+@code {
+    [Inject]
+    private EmailApiClient Api { get; set; } = default!;
+
+    [Inject]
+    private NavigationManager Navigation { get; set; } = default!;
+
+    /// <summary>
+    /// Carries the folder page fetched while PRERENDERING into the interactive circuit, so the
+    /// first interactive render already has the messages (and no second Exchange call is made).
+    /// </summary>
+    [Inject]
+    private PersistentComponentState ApplicationState { get; set; } = default!;
+
+    /// <summary>
+    /// Broadcasts "AI/Exchange settings changed" to every live circuit so the header status and
+    /// this page's AI section update immediately, without a reload.
+    /// </summary>
+    [Inject]
+    private AppStatusNotifier StatusNotifier { get; set; } = default!;
+
+    private const int PageSize = 25;
+    private const string NetworkMessage = "Cannot reach the EmailAI service. Check your network connection and try again.";
+    private const string GenericMessage = "Something unexpected went wrong. Please try again.";
+
+    /// <summary>
+    /// Persisted-state key for the initial folder page. The folder key is appended so a future
+    /// "remember the last folder" feature cannot restore the wrong folder's list.
+    /// </summary>
+    private const string FolderPageStateKeyPrefix = "emailai:mail:folder-page:";
+
+    private enum MobilePane { Folders, List, Detail }
+    private enum BodyView { Text, Html }
+    private enum AiTask { None, SummarizeMessage, SummarizeThread, SuggestReply, GenerateReply }
+
+    private readonly IReadOnlyList<FolderInfo> Folders = FolderCatalog.All;
+
+    private FolderInfo _folder = FolderCatalog.Inbox;
+    private IReadOnlyList<MessageSummary> _messages = [];
+    private int _offset;
+    private int _totalCount;
+    private bool _hasMore;
+    private bool _messagesLoading = true;
+    private string? _listError;
+    private int _listVersion;
+
+    /// <summary>The last successfully loaded folder page (persisted during prerendering).</summary>
+    private MessagePage? _lastPage;
+
+    private EmailMessage? _detail;
+    private string? _selectedItemId;
+    private bool _detailLoading;
+    private string? _detailError;
+    private int _detailVersion;
+
+    private MessageThread? _thread;
+    private bool _threadView;
+    private bool _threadLoading;
+    private string? _threadError;
+    private int _threadVersion;
+
+    private string _replyBody = string.Empty;
+    private bool _replyAll;
+    private bool _sending;
+    private string? _replyError;
+    private ReplyResult? _replyResult;
+    private BodyView _bodyView = BodyView.Text;
+    private MobilePane _mobile = MobilePane.List;
+
+    // AI assistant state (server-side AI; nothing is ever sent automatically).
+    private AiTask _aiTask = AiTask.None;
+    private bool _aiBusy;
+    private string? _aiError;
+    private bool _aiErrorCanOpenSettings;
+    private string? _aiContent;
+    private bool _aiInserted;
+    private AiLanguage _aiLanguage = AiLanguage.Auto;
+    private int _aiVersion;
+    private CancellationTokenSource? _aiCts;
+
+    // AI readiness: checked before an AI operation is attempted so the user is told what is
+    // missing (and where to fix it) instead of seeing a raw failure.
+    private AiReadinessResponse? _aiReadiness;
+
+    /// <summary>Item id opened from a notification deep link (<c>/?item=...</c>), if any.</summary>
+    private string? _deepLinkItemId;
+    private bool _deepLinkOpened;
+
+    /// <summary>True once the prerender→interactive page hand-off has been registered.</summary>
+    private bool _persistenceRegistered;
+    private bool _disposed;
+
+    private bool AiActionsDisabled => _aiBusy || _detail is null || _aiReadiness is { Ready: false };
+
+    /// <summary>"rtl"/"ltr" for the AI result: driven by the selected response language.</summary>
+    private string _aiDirection =>
+        AiTextDirectionResolver.Resolve(_aiLanguage, _aiContent, _detail?.BodyText, _detail?.Subject)
+            == AiTextDirection.Rtl ? "rtl" : "ltr";
+
+    private string _aiTextAlign => _aiDirection == "rtl" ? "right" : "left";
+
+    /// <summary>"rtl"/"ltr" for the reply composer: follows the draft the user is writing.</summary>
+    private string _replyDirection =>
+        AiTextDirectionResolver.Resolve(_aiLanguage, _replyBody)
+            == AiTextDirection.Rtl ? "rtl" : "ltr";
+
+    private string subject =>
+        _detail?.Subject
+        ?? (_detailError is not null
+            ? "Message unavailable"
+            : _detailLoading ? "Loading message…" : "Select a message");
+
+    private string MobileViewClass => _mobile switch
+    {
+        MobilePane.Folders => "view-folders",
+        MobilePane.Detail => "view-detail",
+        _ => "view-list",
+    };
+
+    /// <summary>
+    /// Loads the initial folder data in the INITIALIZATION pipeline on purpose: this hook runs
+    /// during prerendering AND in the interactive circuit, so the very first HTML the user sees
+    /// already contains the Inbox (previously the load ran only from
+    /// <c>OnAfterRenderAsync(firstRender)</c>, so the first paint always showed the empty/loading
+    /// state and the list only appeared after some interaction re-drove the load). The page
+    /// fetched while prerendering is persisted and restored by the interactive instance below,
+    /// so exactly one Exchange query is made and the interactive first render is never empty.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        StatusNotifier.Changed += OnAppStatusChanged;
+
+        _deepLinkItemId = ReadDeepLinkItemId();
+
+        if (RendererInfo.IsInteractive && TryRestoreInitialPage())
+        {
+            await LoadDeepLinkMessageAsync();
+            return;
+        }
+
+        RegisterInitialPagePersistence();
+        await LoadMessagesAsync();
+        await LoadDeepLinkMessageAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Cheap, local check (no provider request) so the AI section can say what is
+            // missing BEFORE the user tries to use it.
+            await RefreshAiReadinessAsync();
+        }
+    }
+
+    private void OpenSettings() => Navigation.NavigateTo("/settings");
+
+    /// <summary>
+    /// Reads the AI readiness state (cheap, local check - no provider request) so the assistant
+    /// can explain what is missing before the user tries to use it, and can offer the Settings
+    /// path that fixes it.
+    /// </summary>
+    private async Task RefreshAiReadinessAsync()
+    {
+        try
+        {
+            _aiReadiness = await Api.GetAiReadinessAsync(probe: false, CancellationToken.None);
+        }
+        catch (EmailApiException)
+        {
+            // The health badge reports service problems; the mail UI must not nag.
+        }
+        catch (HttpRequestException)
+        {
+            // Same - keep the mail UI quiet when the service is unreachable.
+        }
+        catch (OperationCanceledException)
+        {
+            // Component shutting down.
+        }
+    }
+
+    /// <summary>
+    /// A settings change (AI or Exchange) made anywhere in the application arrives here so this
+    /// page updates immediately: the AI section is re-evaluated, and an Exchange change (the
+    /// mailbox this view is reading) refreshes the folder list instead of showing stale mail.
+    /// </summary>
+    private void OnAppStatusChanged(AppStatusChange change)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            await RefreshAiReadinessAsync();
+
+            if (change.Area is AppStatusArea.Exchange or AppStatusArea.All)
+            {
+                ClearDetail();
+                await LoadMessagesAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>
+    /// The interactive instance picks up the page fetched during prerendering. Returns false
+    /// when there is nothing to restore (for example a live circuit without prerendering), in
+    /// which case the caller loads normally - the list is never left empty.
+    /// </summary>
+    private bool TryRestoreInitialPage()
+    {
+        if (!ApplicationState.TryTakeFromJson<MessagePage>(FolderPageStateKeyPrefix + _folder.Key, out var page)
+            || page is null)
+        {
+            return false;
+        }
+
+        ApplyPage(page);
+        return true;
+    }
+
+    /// <summary>
+    /// Registers the prerender→interactive hand-off. Blazor only permits
+    /// <c>PersistentComponentState.PersistAsJson</c> inside a persisting callback (it throws
+    /// otherwise), so the snapshot is written when prerendering finishes - exactly when the
+    /// interactive instance restores it.
+    /// </summary>
+    private void RegisterInitialPagePersistence()
+    {
+        if (RendererInfo.IsInteractive || _persistenceRegistered)
+        {
+            return;
+        }
+
+        _persistenceRegistered = true;
+        ApplicationState.RegisterOnPersisting(PersistInitialPageAsync, InteractiveServer);
+    }
+
+    /// <summary>Writes the page fetched during prerendering for the interactive circuit.</summary>
+    private Task PersistInitialPageAsync()
+    {
+        if (!RendererInfo.IsInteractive && _listError is null)
+        {
+            ApplicationState.PersistAsJson(FolderPageStateKeyPrefix + _folder.Key, _lastPage);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Reads the <c>item</c> query parameter used by the desktop notification click
+    /// (<c>/?item=&lt;exchange item id&gt;</c>) straight from the request/circuit URL. An
+    /// unusable value is ignored - a deep link must never break the mail client.
+    /// </summary>
+    private string? ReadDeepLinkItemId()
+    {
+        if (!Uri.TryCreate(Navigation.Uri, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        foreach (var pair in QueryHelpers.ParseQuery(uri.Query))
+        {
+            if (!string.Equals(pair.Key, "item", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = pair.Value.Count > 0 ? pair.Value[0] : null;
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        return null;
+    }
+
+    private async Task LoadDeepLinkMessageAsync()
+    {
+        if (_deepLinkOpened || string.IsNullOrWhiteSpace(_deepLinkItemId))
+        {
+            return;
+        }
+
+        _deepLinkOpened = true;
+        _mobile = MobilePane.Detail;
+        await LoadDetailAsync(_deepLinkItemId!, resetThread: true);
+    }
+
+    private void ShowFolders() => _mobile = MobilePane.Folders;
+
+    private void ShowList() => _mobile = MobilePane.List;
+
+    private async Task SelectFolderAsync(FolderInfo folder)
+    {
+        _folder = folder;
+        _offset = 0;
+        _messages = [];
+        _totalCount = 0;
+        _hasMore = false;
+        _listError = null;
+        _messagesLoading = true;
+        _mobile = MobilePane.List;
+
+        ClearDetail();
+        await LoadMessagesAsync();
+    }
+
+    private async Task RefreshAsync() => await LoadMessagesAsync();
+
+    private async Task GoNewerAsync()
+    {
+        _offset = Math.Max(0, _offset - PageSize);
+        await LoadMessagesAsync();
+    }
+
+    private async Task GoOlderAsync()
+    {
+        _offset += PageSize;
+        await LoadMessagesAsync();
+    }
+
+    private async Task LoadMessagesAsync()
+    {
+        var version = ++_listVersion;
+        _messagesLoading = true;
+        _listError = null;
+
+        try
+        {
+            var page = await Api.GetFolderMessagesAsync(_folder.Key, _offset, PageSize, CancellationToken.None);
+            if (version != _listVersion)
+            {
+                return;
+            }
+
+            ApplyPage(page);
+        }
+        catch (EmailApiException ex) when (version == _listVersion)
+        {
+            SetListFailure(ex.Message);
+        }
+        catch (HttpRequestException) when (version == _listVersion)
+        {
+            SetListFailure(NetworkMessage);
+        }
+        catch (OperationCanceledException) when (version == _listVersion && !_disposed)
+        {
+            // A cancelled load must never masquerade as "this folder is empty": report it so
+            // the user can retry instead of believing there is no mail.
+            SetListFailure(NetworkMessage);
+        }
+        catch (OperationCanceledException)
+        {
+            // The component is going away, or a newer load superseded this one - ignore.
+        }
+        catch (Exception) when (version != _listVersion)
+        {
+            // A stale response finished after a newer load started - ignore it.
+        }
+        catch (Exception)
+        {
+            SetListFailure(GenericMessage);
+        }
+        finally
+        {
+            if (version == _listVersion)
+            {
+                _messagesLoading = false;
+            }
+        }
+    }
+
+    /// <summary>Clears the list and shows why it could not be loaded.</summary>
+    private void SetListFailure(string message)
+    {
+        _messages = [];
+        _lastPage = null;
+        _totalCount = 0;
+        _hasMore = false;
+        _listError = message;
+    }
+
+    /// <summary>
+    /// Applies one folder page to the view state. Used both by a live load and by the page
+    /// restored from prerendering, so both paths produce exactly the same rendered list.
+    /// </summary>
+    private void ApplyPage(MessagePage page)
+    {
+        _messages = page.Items;
+        _totalCount = page.TotalCount;
+        _hasMore = page.HasMore;
+        _offset = page.Offset;
+        _lastPage = page;
+        _listError = null;
+        _messagesLoading = false;
+    }
+
+    private async Task OpenMessageAsync(string itemId)
+    {
+        _mobile = MobilePane.Detail;
+        await LoadDetailAsync(itemId, resetThread: true);
+    }
+
+    private async Task RetryDetailAsync()
+    {
+        if (!string.IsNullOrEmpty(_selectedItemId))
+        {
+            await LoadDetailAsync(_selectedItemId, resetThread: true);
+        }
+    }
+
+    private void ClearDetail()
+    {
+        _detail = null;
+        _selectedItemId = null;
+        _detailError = null;
+        _thread = null;
+        _threadView = false;
+        _threadError = null;
+        _threadLoading = false;
+        ResetReplyState();
+        ResetAi();
+    }
+
+    private async Task LoadDetailAsync(string itemId, bool resetThread)
+    {
+        ResetAi();
+        var version = ++_detailVersion;
+        _selectedItemId = itemId;
+        _detail = null;
+        _detailLoading = true;
+        _detailError = null;
+
+        if (resetThread)
+        {
+            _threadView = false;
+            _thread = null;
+            _threadError = null;
+            _threadLoading = false;
+            _threadVersion++;
+        }
+
+        ResetReplyState();
+
+        try
+        {
+            var message = await Api.GetMessageAsync(itemId, CancellationToken.None);
+            if (version != _detailVersion)
+            {
+                return;
+            }
+
+            _detail = message;
+            // Prefer the HTML body (it carries the formatting); plain text is the fallback for
+            // messages that only have a text body.
+            _bodyView = message.BodyHtml is { Length: > 0 } ? BodyView.Html : BodyView.Text;
+        }
+        catch (EmailApiException ex) when (version == _detailVersion)
+        {
+            _detailError = ex.Message;
+        }
+        catch (HttpRequestException) when (version == _detailVersion)
+        {
+            _detailError = NetworkMessage;
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore - component activity cancelled.
+        }
+        catch (Exception) when (version != _detailVersion)
+        {
+            // A stale response finished after a newer load started - ignore it.
+        }
+        catch (Exception)
+        {
+            _detailError = GenericMessage;
+        }
+        finally
+        {
+            if (version == _detailVersion)
+            {
+                _detailLoading = false;
+            }
+        }
+    }
+
+    private async Task OpenThreadItemAsync(ThreadMessage threadItem)
+    {
+        if (_detail?.Id == threadItem.Id)
+        {
+            return;
+        }
+
+        await LoadDetailAsync(threadItem.Id, resetThread: false);
+    }
+
+    private async Task ToggleThreadAsync()
+    {
+        if (_detail is null)
+        {
+            return;
+        }
+
+        if (_threadView)
+        {
+            _threadView = false;
+            return;
+        }
+
+        _threadView = true;
+        if (_thread is null ||
+            !string.Equals(_thread.ConversationId, _detail.ConversationId, StringComparison.Ordinal))
+        {
+            await ReloadThreadAsync();
+        }
+    }
+
+    private async Task ReloadThreadAsync()
+    {
+        if (_detail is null)
+        {
+            return;
+        }
+
+        var itemId = _detail.Id;
+        var version = ++_threadVersion;
+        _threadLoading = true;
+        _threadError = null;
+
+        try
+        {
+            var thread = await Api.GetThreadAsync(itemId, CancellationToken.None);
+            if (version != _threadVersion)
+            {
+                return;
+            }
+
+            _thread = thread;
+        }
+        catch (EmailApiException ex) when (version == _threadVersion)
+        {
+            _threadError = ex.Message;
+        }
+        catch (HttpRequestException) when (version == _threadVersion)
+        {
+            _threadError = NetworkMessage;
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore - component activity cancelled.
+        }
+        catch (Exception) when (version != _threadVersion)
+        {
+            // A stale response finished after a newer load started - ignore it.
+        }
+        catch (Exception)
+        {
+            _threadError = GenericMessage;
+        }
+        finally
+        {
+            if (version == _threadVersion)
+            {
+                _threadLoading = false;
+            }
+        }
+    }
+
+    private async Task SendReplyAsync()
+    {
+        if (_detail is null || string.IsNullOrWhiteSpace(_replyBody))
+        {
+            return;
+        }
+
+        _sending = true;
+        _replyError = null;
+        _replyResult = null;
+
+        try
+        {
+            var draft = new ReplyDraft { Body = TextToHtml(_replyBody), ReplyAll = _replyAll };
+            var result = await Api.ReplyAsync(_detail.Id, draft, CancellationToken.None);
+            _replyResult = result;
+            _replyBody = string.Empty;
+            _replyAll = false;
+            await LoadMessagesAsync();
+        }
+        catch (EmailApiException ex)
+        {
+            _replyError = ex.Message;
+        }
+        catch (HttpRequestException)
+        {
+            _replyError = NetworkMessage;
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore - component activity cancelled.
+        }
+        catch (Exception)
+        {
+            _replyError = GenericMessage;
+        }
+        finally
+        {
+            _sending = false;
+        }
+    }
+
+    private void DismissReplyResult() => _replyResult = null;
+
+    private void ResetReplyState()
+    {
+        _replyBody = string.Empty;
+        _replyAll = false;
+        _sending = false;
+        _replyError = null;
+        _replyResult = null;
+    }
+
+    // ------------------------------------------------------------------
+    // AI assistant (server-side AI)
+    // ------------------------------------------------------------------
+
+    private async Task RunAiAsync(AiTask task)
+    {
+        if (_detail is null || _aiBusy)
+        {
+            return;
+        }
+
+        // Pre-flight: if the assistant is not usable (not configured, no key, no model,
+        // invalid configuration) say so and offer Settings instead of executing a call that
+        // is guaranteed to fail.
+        await RefreshAiReadinessAsync();
+        if (_aiReadiness is { Ready: false })
+        {
+            _aiTask = AiTask.None;
+            _aiError = null;
+            _aiContent = null;
+            _aiInserted = false;
+            StateHasChanged();
+            return;
+        }
+
+        var itemId = _detail.Id;
+        var version = ++_aiVersion;
+
+        _aiCts?.Cancel();
+        _aiCts = new CancellationTokenSource();
+        var token = _aiCts.Token;
+
+        _aiTask = task;
+        _aiBusy = true;
+        _aiError = null;
+        _aiErrorCanOpenSettings = false;
+        _aiContent = null;
+        _aiInserted = false;
+
+        var request = new AiOperationRequest { Language = _aiLanguage };
+
+        try
+        {
+            var content = task switch
+            {
+                AiTask.SummarizeMessage => (await Api.SummarizeMessageAsync(itemId, request, token)).Content,
+                AiTask.SummarizeThread => (await Api.SummarizeThreadAsync(itemId, request, token)).Content,
+                AiTask.SuggestReply => (await Api.SuggestReplyAsync(itemId, request, token)).Content,
+                AiTask.GenerateReply => (await Api.GenerateReplyAsync(itemId, request, token)).Content,
+                _ => string.Empty,
+            };
+
+            if (version != _aiVersion)
+            {
+                return; // superseded or cancelled while awaiting
+            }
+
+            _aiContent = content;
+            if (task == AiTask.GenerateReply && !string.IsNullOrEmpty(content))
+            {
+                // Place the draft into the editable reply composer. Sending still only
+                // happens when the user presses "Send reply" (SendReplyAsync).
+                _replyBody = content;
+                _aiInserted = true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the user or superseded by a newer request - nothing to show.
+        }
+        catch (EmailApiException ex) when (version == _aiVersion)
+        {
+            // Never show a technical status code: map the failure to user guidance and, when
+            // the user can fix it themselves, offer the Settings path.
+            var guidance = AiUserMessages.ForErrorCode(ex.ErrorCode, canOpenSettings: true);
+            _aiError = guidance.Message;
+            _aiErrorCanOpenSettings = guidance.CanOpenSettings;
+        }
+        catch (HttpRequestException) when (version == _aiVersion)
+        {
+            _aiError = NetworkMessage;
+            _aiErrorCanOpenSettings = false;
+        }
+        catch (Exception) when (version == _aiVersion)
+        {
+            _aiError = GenericMessage;
+            _aiErrorCanOpenSettings = false;
+        }
+        finally
+        {
+            if (version == _aiVersion)
+            {
+                _aiBusy = false;
+            }
+        }
+    }
+
+    private async Task RetryAiAsync()
+    {
+        if (_aiTask == AiTask.None)
+        {
+            return;
+        }
+
+        await RunAiAsync(_aiTask);
+    }
+
+    private void CancelAi()
+    {
+        _aiVersion++;
+        _aiCts?.Cancel();
+        _aiCts = null;
+        _aiTask = AiTask.None;
+        _aiBusy = false;
+        _aiError = null;
+        _aiContent = null;
+        _aiInserted = false;
+    }
+
+    private void ResetAi() => CancelAi();
+
+    private void ClearAiResult()
+    {
+        _aiTask = AiTask.None;
+        _aiContent = null;
+        _aiInserted = false;
+    }
+
+    private void InsertAiReplyIntoComposer()
+    {
+        if (string.IsNullOrEmpty(_aiContent))
+        {
+            return;
+        }
+
+        _replyBody = _aiContent!;
+        _aiInserted = true;
+    }
+
+    private void OnAiLanguageChanged(ChangeEventArgs e)
+    {
+        _aiLanguage = Enum.TryParse<AiLanguage>(e.Value as string, out var parsed)
+            ? parsed
+            : AiLanguage.Auto;
+    }
+
+    private string AiBusyLabel => _aiTask switch
+    {
+        AiTask.SummarizeMessage => "Summarizing message…",
+        AiTask.SummarizeThread => "Summarizing conversation…",
+        AiTask.SuggestReply => "Asking the AI for a suggestion…",
+        AiTask.GenerateReply => "Generating a draft reply…",
+        _ => "Asking the AI…",
+    };
+
+    private string AiResultLabel => _aiTask switch
+    {
+        AiTask.SummarizeMessage => "AI summary",
+        AiTask.SummarizeThread => "AI thread summary",
+        AiTask.SuggestReply => "Suggested reply",
+        AiTask.GenerateReply => "Generated draft",
+        _ => "AI result",
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        StatusNotifier.Changed -= OnAppStatusChanged;
+        _aiVersion++;
+        _aiCts?.Cancel();
+        _aiCts?.Dispose();
+        _aiCts = null;
+    }
+
+    private string RowName(MessageSummary item)
+        => _folder.ShowsRecipients
+            ? JoinDisplayNames(item.To, "(no recipients)")
+            : DisplayName(item.From);
+
+    private string RowAddresses(MessageSummary item)
+        => _folder.ShowsRecipients
+            ? JoinFormatted(item.To)
+            : (item.From?.Address ?? string.Empty);
+
+    private static string DisplayName(EmailAddress? address)
+    {
+        if (address is null)
+        {
+            return "(unknown)";
+        }
+
+        return string.IsNullOrWhiteSpace(address.Name) ? address.Address ?? "(no address)" : address.Name;
+    }
+
+    private static string JoinDisplayNames(IReadOnlyList<EmailAddress> addresses, string fallback)
+        => addresses.Count == 0 ? fallback : string.Join(", ", addresses.Select(DisplayName));
+
+    private static string JoinFormatted(IReadOnlyList<EmailAddress> addresses)
+        => string.Join(", ", addresses.Select(address => address.ToString()));
+
+    private static string Initials(EmailAddress? address)
+    {
+        var name = string.IsNullOrWhiteSpace(address?.Name) ? address?.Address : address?.Name;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "?";
+        }
+
+        var parts = name.Split([' ', '.', '-', '_', '@'], StringSplitOptions.RemoveEmptyEntries);
+        var initials = string.Concat(parts.Take(2).Select(part => char.ToUpperInvariant(part[0])));
+        return initials.Length == 0 ? "?" : initials;
+    }
+
+    private static string FormatShortDate(DateTimeOffset? value)
+    {
+        if (value is null)
+        {
+            return string.Empty;
+        }
+
+        var local = value.Value.ToLocalTime();
+        return local.Date == DateTime.Today ? local.ToString("HH:mm") : local.ToString("MMM d");
+    }
+
+    private static string FormatDateTime(DateTimeOffset? value)
+        => value is null
+            ? string.Empty
+            : value.Value.ToLocalTime().ToString("ddd, MMM d yyyy 'at' HH:mm");
+
+    private static string FormatSize(long? size) => size switch
+    {
+        null or <= 0 => string.Empty,
+        < 1024 => $"{size} B",
+        < 1024L * 1024 => $"{size / 1024.0:0.#} KB",
+        _ => $"{size / (1024.0 * 1024.0):0.#} MB",
+    };
+
+    private static string TextToHtml(string plainText)
+    {
+        var normalized = plainText.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', ' ');
+        var escaped = System.Net.WebUtility.HtmlEncode(normalized);
+        return escaped.Replace("\n", "<br/>", StringComparison.Ordinal);
+    }
+}
+
+
+

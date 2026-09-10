@@ -1,0 +1,1071 @@
+@page "/settings"
+@rendermode InteractiveServer
+
+<PageTitle>Settings · EmailAI</PageTitle>
+
+<div class="settings-page">
+
+    <div class="settings-toolbar">
+        <a class="mini-btn" href="/">‹ Back to mail</a>
+        <span class="settings-title">Settings</span>
+    </div>
+
+    @if (_loadError is not null)
+    {
+        <div class="banner banner-error" role="alert">
+            <strong>Settings could not be loaded.</strong>
+            <p>@_loadError</p>
+        </div>
+    }
+    else if (!_loaded)
+    {
+        <div class="empty-state"><LoadingState Text="Loading settings…" /></div>
+    }
+    else
+    {
+        @* Non-blocking setup banner: never a modal, never hides the form. *@
+        @if (_ai is { UserManaged: true } && (!_ai.Configured || !_ai.HasApiKey))
+        {
+            <div class="banner banner-warn settings-ai-banner" role="status">
+                <strong>AI is not configured yet.</strong>
+                <p>
+                    @(_ai.Configured
+                        ? "The AI provider is configured but has no API key for this Windows account. Save one below to use Summarize / Suggest reply / Generate reply in the mail client."
+                        : "Enter your provider Base URL and Model, save your API key, then test the connection. No gateway is required - EmailAI talks to any OpenAI-compatible API.")
+                </p>
+            </div>
+        }
+
+        <section class="settings-card">
+            <header class="settings-card-head">
+                <span class="settings-card-title">AI provider</span>
+                <span class="settings-chip" title="Effective key source right now">
+                    <span class="dot @_aiKeyClass"></span>
+                    @_aiSourceLabel
+                </span>
+            </header>
+
+            @if (_ai is { UserManaged: false })
+            {
+                <div class="banner banner-warn" role="status">
+                    <strong>Managed by the server environment.</strong>
+                    <p>
+                        This deployment reads the AI provider settings from the environment
+                        (AI_BASE_URL / AI_MODEL / AI_API_KEY with AI_CREDENTIAL_SOURCE=environment),
+                        so they cannot be changed from Settings. Ask the administrator to update them.
+                    </p>
+                </div>
+
+                <dl class="meta-list">
+                    <div><dt>Base URL</dt><dd>@(_ai.Configured ? _ai.BaseUrl : "Not configured")</dd></div>
+                    <div><dt>Model</dt><dd>@(_ai.Configured ? _ai.Model : "Not configured")</dd></div>
+                    <div><dt>API key</dt><dd>@_keySummary</dd></div>
+                </dl>
+            }
+            else if (_ai is not null)
+            {
+                <div class="settings-row">
+                    <label class="field field-grow" for="ai-base-url-input">
+                        <span class="field-label">Base URL</span>
+                        <input id="ai-base-url-input"
+                               class="text-input"
+                               type="text"
+                               autocomplete="off"
+                               spellcheck="false"
+                               placeholder="https://api.openai.com/v1"
+                               value="@_draftBaseUrl"
+                               @oninput="OnDraftBaseUrlChanged"
+                               disabled="@_busy" />
+                        <span class="hint">
+                            The API root of any <strong>OpenAI-compatible provider</strong>,
+                            e.g. <code>https://api.openai.com/v1</code> or your own company's
+                            endpoint. EmailAI calls <code>{Base URL}/chat/completions</code>.
+                        </span>
+                    </label>
+                </div>
+
+                <div class="settings-row">
+                    <label class="field field-grow" for="ai-model-input">
+                        <span class="field-label">Model</span>
+                        <input id="ai-model-input"
+                               class="text-input"
+                               type="text"
+                               autocomplete="off"
+                               spellcheck="false"
+                               placeholder="gpt-5"
+                               value="@_draftModel"
+                               @oninput="OnDraftModelChanged"
+                               disabled="@_busy" />
+                        <span class="hint">
+                            The model identifier your provider expects, e.g. <code>gpt-5</code>.
+                        </span>
+                    </label>
+                </div>
+
+                <div class="settings-row">
+                    <label class="field field-grow" for="ai-key-input">
+                        <span class="field-label">API key</span>
+                        <input id="ai-key-input"
+                               class="text-input"
+                               type="password"
+                               autocomplete="off"
+                               spellcheck="false"
+                               placeholder="@_keyPlaceholder"
+                               value="@_draftKey"
+                               @oninput="OnDraftKeyChanged"
+                               disabled="@_busy" />
+                        <span class="hint">
+                            Stored only in <strong>Windows Credential Manager</strong> under
+                            EmailAI/AI for the current Windows account — never in app files,
+                            logs, the browser or this page (the key is never shown back to you).
+                        </span>
+                    </label>
+                </div>
+
+                <div class="settings-actions">
+                    <button type="button" class="btn-primary"
+                            disabled="@(_busy || !_hasEdits)"
+                            @onclick="SaveAiSettingsAsync">
+                        Save AI settings
+                    </button>
+                    <button type="button" class="btn-secondary"
+                            disabled="@(_busy || !_storeHasKey)"
+                            @onclick="RemoveKeyAsync">
+                        Remove saved key
+                    </button>
+                    <span class="pane-toolbar-spacer"></span>
+                    <button type="button" class="btn-secondary"
+                            disabled="@_busy"
+                            @onclick="TestConnectionAsync">
+                        Test connection
+                    </button>
+                </div>
+            }
+
+
+            @if (_ai is not null)
+            {
+                <dl class="meta-list">
+                    <div><dt>Endpoint</dt><dd>@(_ai.Configured ? $"{_ai.BaseUrl}/chat/completions (model: {_ai.Model}, timeout: {_ai.TimeoutSeconds}s)" : "Not configured yet")</dd></div>
+                    <div><dt>API key</dt><dd>@_keySummary</dd></div>
+                    <div><dt>Source</dt><dd>@_aiSourceDescription</dd></div>
+                </dl>
+            }
+        </section>
+
+      @if (_exchange is not null)
+        {
+            <section class="settings-card">
+                <header class="settings-card-head">
+                    <span class="settings-card-title">Exchange connection</span>
+                    <span class="settings-chip" title="@_exchangeSourceDescription">
+                        <span class="dot @_exchangeDotClass"></span>
+                        @_exchangeSourceLabel
+                    </span>
+                </header>
+
+                @if (!_exchange.Configured)
+                {
+                    <div class="banner banner-warn" role="status">
+                        <strong>Exchange is not configured yet.</strong>
+                        <p>
+                            Enter your Exchange EWS endpoint below (for example
+                            <code>https://mail.contoso.com/EWS/Exchange.asmx</code>), choose how
+                            EmailAI should authenticate, save, then test the connection. The
+                            endpoint is stored in your per-user settings and the password only in
+                            Windows Credential Manager for this Windows account.
+                        </p>
+                    </div>
+                }
+
+                <div class="settings-row">
+                    <label class="field field-grow" for="exchange-url-input">
+                        <span class="field-label">EWS endpoint</span>
+                        <input id="exchange-url-input"
+                               class="text-input"
+                               type="text"
+                               autocomplete="off"
+                               spellcheck="false"
+                               placeholder="https://mail.contoso.com/EWS/Exchange.asmx"
+                               value="@_draftExchangeUrl"
+                               @oninput="OnDraftExchangeUrlChanged"
+                               disabled="@_busy" />
+                        <span class="hint">
+                            The Exchange Web Services (EWS) endpoint of your mailbox server.
+                        </span>
+                    </label>
+                </div>
+
+                <div class="settings-row">
+                    <label class="field" for="exchange-auth-select">
+                        <span class="field-label">Authentication</span>
+                        <select id="exchange-auth-select"
+                                class="text-input"
+                                value="@_draftExchangeMode"
+                                @onchange="OnDraftExchangeModeChanged"
+                                disabled="@_busy">
+                            <option value="Windows">Windows (current Windows account)</option>
+                            <option value="UsernamePassword">Username + Password</option>
+                        </select>
+                        <span class="hint">
+                            Exactly one mode is used - EmailAI never falls back to the other one.
+                        </span>
+                    </label>
+                </div>
+
+                @if (_usesWindowsAuthDraft)
+                {
+                    <p class="settings-note hint">
+                        EmailAI signs in with the Windows account running the app
+                        (@_windowsAccountLabel). No username or password is stored, and any
+                        previously saved Exchange password is removed when you save.
+                    </p>
+                }
+                else
+                {
+                    <div class="settings-row">
+                        <label class="field field-grow" for="exchange-username-input">
+                            <span class="field-label">Username</span>
+                            <input id="exchange-username-input"
+                                   class="text-input"
+                                   type="text"
+                                   autocomplete="off"
+                                   spellcheck="false"
+                                   placeholder="user@contoso.com or CONTOSO\user"
+                                   value="@_draftExchangeUsername"
+                                   @oninput="OnDraftExchangeUsernameChanged"
+                                   disabled="@_busy" />
+                            <span class="hint">The mailbox account to sign in as. Required.</span>
+                        </label>
+                    </div>
+
+                    <div class="settings-row">
+                        <label class="field" for="exchange-domain-input">
+                            <span class="field-label">Domain (optional)</span>
+                            <input id="exchange-domain-input"
+                                   class="text-input"
+                                   type="text"
+                                   autocomplete="off"
+                                   spellcheck="false"
+                                   placeholder="CONTOSO"
+                                   value="@_draftExchangeDomain"
+                                   @oninput="OnDraftExchangeDomainChanged"
+                                   disabled="@_busy" />
+                            <span class="hint">
+                                Only needed when the server expects a separate domain name.
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="settings-row">
+                        <label class="field field-grow" for="exchange-password-input">
+                            <span class="field-label">Password</span>
+                            <input id="exchange-password-input"
+                                   class="text-input"
+                                   type="password"
+                                   autocomplete="new-password"
+                                   spellcheck="false"
+                                   placeholder="@_exchangePasswordPlaceholder"
+                                   value="@_draftExchangePassword"
+                                   @oninput="OnDraftExchangePasswordChanged"
+                                   disabled="@_busy" />
+                            <span class="hint">
+                                Stored only in <strong>Windows Credential Manager</strong> under
+                                EmailAI/Exchange for the current Windows account - never in app
+                                files, logs, the browser or this page (the password is never shown
+                                back to you).
+                            </span>
+                        </label>
+                    </div>
+                }
+
+                <div class="settings-actions">
+                    <button type="button" class="btn-primary"
+                            disabled="@(_busy || !_hasExchangeEdits)"
+                            @onclick="SaveExchangeSettingsAsync">
+                        Save Exchange settings
+                    </button>
+                    <button type="button" class="btn-secondary"
+                            disabled="@(_busy || !_exchange.UserManaged)"
+                            @onclick="RemoveExchangeSettingsAsync">
+                        Remove saved settings
+                    </button>
+                    <span class="pane-toolbar-spacer"></span>
+                    <button type="button" class="btn-secondary"
+                            disabled="@_busy"
+                            @onclick="TestExchangeConnectionAsync">
+                        Test connection
+                    </button>
+                </div>
+
+
+                <dl class="meta-list">
+                    <div><dt>Configuration source</dt><dd>@_exchangeSourceDescription</dd></div>
+                    <div><dt>Endpoint</dt><dd>@(_exchange.EwsUrl ?? "Not configured")</dd></div>
+                    <div><dt>Authentication</dt><dd>@_exchangeModeLabel</dd></div>
+
+                    @if (_exchange.CurrentUser is not null)
+                    {
+                        <div>
+                            <dt>Mailbox used by the assistant</dt>
+                            <dd>
+                                <span>@_currentUserSummary</span>
+                                <span class="hint">
+                                    The AI is told who it is helping (taken from this Exchange account,
+                                    never from the email text) so drafts and summaries are written for
+                                    the right person. Only these non-secret values are shown.
+                                </span>
+                            </dd>
+                        </div>
+                    }
+
+                    @if (_exchange.UsesDefaultCredentials)
+                    {
+                        <div>
+                            <dt>Windows account used</dt>
+                            <dd>
+                                @if (_exchange.DetectedIdentity is { } identity)
+                                {
+                                    <span>@(string.IsNullOrWhiteSpace(identity.FullName) ? "(none detected)" : identity.FullName)</span>
+                                    <span class="hint">
+                                        detected via @identity.DetectionSource
+                                        @(string.IsNullOrWhiteSpace(identity.Domain) ? null : $" domain: {identity.Domain}")
+                                        @(string.IsNullOrWhiteSpace(identity.UserName) ? null : $" user: {identity.UserName}")
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span>Not detected.</span>
+                                }
+                            </dd>
+                        </div>
+                        <div><dt>Uses current Windows identity</dt><dd>Yes - single authentication mode, no credential fallback</dd></div>
+                    }
+                    else
+                    {
+                        <div><dt>Uses current Windows identity</dt><dd>No - Windows identity is not used in UsernamePassword mode</dd></div>
+                        <div><dt>Account</dt><dd>@_exchangeAccountSummary</dd></div>
+                        <div><dt>Password</dt><dd>@_exchangePasswordSummary</dd></div>
+                    }
+                </dl>
+
+                <p class="settings-note hint">@_exchange.Note</p>
+            </section>
+        }
+    }
+
+    @if (_notice is not null)
+    {
+        <div class="banner banner-@_notice.KindClass settings-notice" role="status">
+            <span>@_notice.Text</span>
+            @if (_notice.IsError)
+            {
+                <button type="button" class="banner-dismiss" title="Dismiss" aria-label="Dismiss" @onclick="DismissNotice">✕</button>
+            }
+        </div>
+    }
+</div>
+
+
+@code {
+    [Inject]
+    private EmailApiClient Api { get; set; } = default!;
+
+    /// <summary>
+    /// Broadcasts "AI/Exchange configuration changed" to every live circuit, so the header
+    /// status strip and the mail page update the moment a save here succeeds instead of
+    /// waiting for the next poll.
+    /// </summary>
+    [Inject]
+    private AppStatusNotifier StatusNotifier { get; set; } = default!;
+
+    private bool _loaded;
+    private bool _busy;
+    private string? _loadError;
+    private AiSettingsResponse? _ai;
+    private ExchangeSettingsResponse? _exchange;
+
+    private string _draftBaseUrl = string.Empty;
+    private string _draftModel = string.Empty;
+    private string _draftKey = string.Empty;
+
+    // The effective values as loaded from the server. Saving compares the drafts to
+    // these so fields the user did not touch are not persisted (and a server-provided
+    // value is never accidentally turned into a fixed per-user override).
+    private string _initialBaseUrl = string.Empty;
+    private string _initialModel = string.Empty;
+
+    // Exchange drafts (per-user configuration). The password draft is write-only: it is
+    // never loaded from the server and is cleared after every save.
+    private string _draftExchangeUrl = string.Empty;
+    private string _draftExchangeMode = "Windows";
+    private string _draftExchangeUsername = string.Empty;
+    private string _draftExchangeDomain = string.Empty;
+    private string _draftExchangePassword = string.Empty;
+
+    private string _initialExchangeUrl = string.Empty;
+    private string _initialExchangeMode = "Windows";
+    private string _initialExchangeUsername = string.Empty;
+    private string _initialExchangeDomain = string.Empty;
+
+    private Notice? _notice;
+
+    private string _aiSourceLabel => _ai is { HasApiKey: true } && _ai.EffectiveSource == "windows"
+        ? "API key present"
+        : _ai is { HasApiKey: true }
+            ? "Server key in use"
+            : "No API key yet";
+
+    private string _aiKeyClass => _ai is { HasApiKey: true } ? "dot-ok" : "dot-warn";
+
+    /// <summary>True while the draft uses Windows authentication (no password involved).</summary>
+    private bool _usesWindowsAuthDraft
+        => !string.Equals(_draftExchangeMode, "UsernamePassword", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Where the effective Exchange configuration comes from, for the card chip.</summary>
+    private string _exchangeSourceLabel => _exchange switch
+    {
+        null => string.Empty,
+        { UserManaged: true } => "This Windows account",
+        { Configured: true } => "Server configuration",
+        _ => "Not configured",
+    };
+
+    private string _exchangeDotClass => _exchange switch
+    {
+        null => "dot-idle",
+        { UserManaged: true } => "dot-ok",
+        { Configured: true } => "dot-warn",
+        _ => "dot-bad",
+    };
+
+    /// <summary>Explains the effective configuration source without leaking credentials.</summary>
+    private string _exchangeSourceDescription => _exchange switch
+    {
+        null => string.Empty,
+        { UserManaged: true } =>
+            "Saved for this Windows account in Settings. It is used as a whole - the deployment " +
+            "configuration is ignored - and the password (when needed) is stored in Windows " +
+            "Credential Manager.",
+        { Configured: true } =>
+            "Not configured for this Windows account yet, so the deployment's Exchange " +
+            "configuration is in effect. Saving below stores your own settings for this account.",
+        _ => "Exchange is not configured for this Windows account or by the deployment.",
+    };
+
+    /// <summary>Windows account that Windows mode signs in as.</summary>
+    private string _windowsAccountLabel => _exchange?.DetectedIdentity is { } identity
+        && !string.IsNullOrWhiteSpace(identity.FullName)
+        ? string.IsNullOrWhiteSpace(identity.Domain)
+            ? identity.FullName!
+            : $"{identity.Domain}\\{identity.FullName}"
+        : $"{Environment.UserDomainName}\\{Environment.UserName}";
+
+    /// <summary>Account summary: a per-user account value or a presence-only statement.</summary>
+    private string _exchangeAccountSummary
+    {
+        get
+        {
+            if (_exchange is null || _exchange.UsesDefaultCredentials)
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_exchange.Username))
+            {
+                return string.IsNullOrWhiteSpace(_exchange.Domain)
+                    ? _exchange.Username!
+                    : $"{_exchange.Domain}\\{_exchange.Username}";
+            }
+
+            return _exchange.UsernameConfigured
+                ? "Managed by the server configuration (value not shown)"
+                : "Not configured";
+        }
+    }
+
+    /// <summary>Password summary: presence only, never the value.</summary>
+    private string _exchangePasswordSummary => _exchange switch
+    {
+        null => string.Empty,
+        { HasPassword: true } => "Saved in Windows Credential Manager (this account)",
+        { UserManaged: true } => "Not saved",
+        { PasswordConfigured: true } => "Configured by the deployment (value not shown)",
+        _ => "Not configured",
+    };
+
+    /// <summary>Placeholder for the write-only password box.</summary>
+    private string _exchangePasswordPlaceholder => _exchange is { HasPassword: true }
+        ? "A password is saved for this Windows account - type a new one to replace it"
+        : "Enter the password for this account";
+
+    /// <summary>Display label for the explicit Exchange authentication mode.</summary>
+    private string _exchangeModeLabel
+    {
+        get
+        {
+            if (_exchange is null)
+            {
+                return string.Empty;
+            }
+
+            if (_exchange.UsesDefaultCredentials)
+            {
+                return "Windows (current Windows account)";
+            }
+
+            return string.Equals(_exchange.AuthenticationMode, "UsernamePassword", StringComparison.OrdinalIgnoreCase)
+                ? "Username + Password"
+                : _exchange.AuthenticationMode;
+        }
+    }
+
+    /// <summary>True when the per-user Windows Credential Manager entry exists.</summary>
+    private bool _storeHasKey => _ai is { EffectiveSource: "windows", HasApiKey: true };
+
+    /// <summary>
+    /// The mailbox EmailAI is acting as - the identity the AI is told it is helping. Display
+    /// data only (no password, no token): the same non-secret values the Exchange card shows.
+    /// </summary>
+    private string _currentUserSummary
+    {
+        get
+        {
+            if (_exchange?.CurrentUser is not { } user)
+            {
+                return string.Empty;
+            }
+
+            if (!user.Resolved)
+            {
+                return user.Source is MailboxIdentity.WindowsIdentitySource or MailboxIdentity.UnknownSource
+                    ? "Not determined yet - EmailAI resolves it from the Exchange account when mail is loaded."
+                    : "Provided by the deployment configuration (value not shown) - the assistant uses it on the server.";
+            }
+
+            var name = !string.IsNullOrWhiteSpace(user.DisplayName)
+                ? user.DisplayName!
+                : !string.IsNullOrWhiteSpace(user.SmtpAddress)
+                    ? user.SmtpAddress!
+                    : user.AccountName ?? "(unknown)";
+
+            var details = new List<string>(3);
+            if (!string.IsNullOrWhiteSpace(user.SmtpAddress)
+                && !string.Equals(user.SmtpAddress, name, StringComparison.OrdinalIgnoreCase))
+            {
+                details.Add(user.SmtpAddress!);
+            }
+
+            if (!string.IsNullOrWhiteSpace(user.AccountName)
+                && !string.Equals(user.AccountName, name, StringComparison.OrdinalIgnoreCase))
+            {
+                details.Add($"account: {user.AccountName}");
+            }
+
+            details.Add(user.Source switch
+            {
+                MailboxIdentity.ExchangeDirectorySource => "resolved through the Exchange directory",
+                MailboxIdentity.ConfiguredMailboxSource => "the configured mailbox",
+                MailboxIdentity.ConfiguredAccountSource => "the configured account",
+                MailboxIdentity.WindowsIdentitySource => "the current Windows account",
+                _ => "source unknown",
+            });
+
+            return $"{name} ({string.Join(", ", details)})";
+        }
+    }
+
+    /// <summary>True when at least one field differs from the loaded state or a key was typed.</summary>
+    private bool _hasEdits
+    {
+        get
+        {
+            if (_ai is not { UserManaged: true })
+            {
+                return false;
+            }
+
+            var baseUrlChanged = !string.Equals(_draftBaseUrl, _initialBaseUrl, StringComparison.Ordinal);
+            var modelChanged = !string.Equals(_draftModel, _initialModel, StringComparison.Ordinal);
+            return baseUrlChanged || modelChanged || !string.IsNullOrWhiteSpace(_draftKey);
+        }
+    }
+
+    /// <summary>
+    /// True when at least one Exchange field differs from the loaded state, a password was
+    /// typed, or the account has no per-user configuration yet (so the form can be saved).
+    /// </summary>
+    private bool _hasExchangeEdits
+    {
+        get
+        {
+            if (_exchange is null)
+            {
+                return false;
+            }
+
+            if (!_exchange.UserManaged)
+            {
+                // Nothing is saved for this account yet: any complete form can be saved.
+                return !string.IsNullOrWhiteSpace(_draftExchangeUrl);
+            }
+
+            return !string.Equals(_draftExchangeUrl, _initialExchangeUrl, StringComparison.Ordinal)
+                || !string.Equals(_draftExchangeMode, _initialExchangeMode, StringComparison.Ordinal)
+                || !string.Equals(_draftExchangeUsername, _initialExchangeUsername, StringComparison.Ordinal)
+                || !string.Equals(_draftExchangeDomain, _initialExchangeDomain, StringComparison.Ordinal)
+                || !string.IsNullOrWhiteSpace(_draftExchangePassword);
+        }
+    }
+
+
+    private string _keyPlaceholder
+    {
+        get
+        {
+            if (_ai is null)
+            {
+                return "Paste your AI provider API key";
+            }
+
+            if (_storeHasKey)
+            {
+                return "A key is saved for this Windows account — type a new one to replace it";
+            }
+
+            return _ai.EffectiveSource == "environment" && _ai.HasApiKey
+                ? "Type a key to store it here and use it from now on"
+                : "Paste your AI provider API key";
+        }
+    }
+
+    private string _keySummary
+    {
+        get
+        {
+            if (_ai is null)
+            {
+                return string.Empty;
+            }
+
+            if (_ai.EffectiveSource == "windows" && _ai.HasApiKey)
+            {
+                return "Saved in Windows Credential Manager (this account)";
+            }
+
+            return _ai.EffectiveSource == "environment" && _ai.HasApiKey
+                ? "Saved (server-configured — AI_API_KEY fallback in effect)"
+                : "Not saved";
+        }
+    }
+
+    private string _aiSourceDescription
+    {
+        get
+        {
+            if (_ai is null)
+            {
+                return string.Empty;
+            }
+
+            if (!_ai.UserManaged)
+            {
+                return "Server-managed: AI_API_KEY / AI_CREDENTIAL_SOURCE=environment. This deployment's key cannot be changed from Settings.";
+            }
+
+            if (_ai.EffectiveSource == "environment" && _ai.HasApiKey)
+            {
+                return "Server-configured key (AI_API_KEY) is in use because this Windows account has no saved key yet. " +
+                       "Saving a key here stores it in Windows Credential Manager and takes precedence from then on.";
+            }
+
+            return _storeHasKey
+                ? "Windows Credential Manager (this account). Used for every AI request."
+                : "Windows Credential Manager (this account). Saving a key here makes the AI assistant available.";
+        }
+    }
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loadError = null;
+        try
+        {
+            _ai = await Api.GetAiSettingsAsync(CancellationToken.None);
+            _exchange = await Api.GetExchangeSettingsAsync(CancellationToken.None);
+            ApplyLoadedExchangeValues();
+            ApplyLoadedAiValues();
+            _loaded = true;
+        }
+        catch (EmailApiException exception)
+        {
+            _loadError = exception.Message;
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Cannot reach the EmailAI service. Check your network connection and try again.";
+        }
+        catch (OperationCanceledException)
+        {
+            // Component shutting down.
+        }
+    }
+
+    private void OnDraftBaseUrlChanged(ChangeEventArgs e)
+    {
+        _draftBaseUrl = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDraftModelChanged(ChangeEventArgs e)
+    {
+        _draftModel = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDraftKeyChanged(ChangeEventArgs e)
+    {
+        _draftKey = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private async Task SaveAiSettingsAsync()
+    {
+        if (_ai is not { UserManaged: true } || !_hasEdits)
+        {
+            return;
+        }
+
+        _busy = true;
+        _notice = null;
+        try
+        {
+            // Only send fields the user actually changed. An unchanged field keeps its
+            // current behaviour: null = "leave the stored value alone" (a value that came
+            // from the server is not accidentally pinned as a per-user override).
+            var baseUrlChanged = !string.Equals(_draftBaseUrl, _initialBaseUrl, StringComparison.Ordinal);
+            var modelChanged = !string.Equals(_draftModel, _initialModel, StringComparison.Ordinal);
+
+            await Api.SaveAiSettingsAsync(
+                baseUrlChanged ? _draftBaseUrl : null,
+                modelChanged ? _draftModel : null,
+                string.IsNullOrWhiteSpace(_draftKey) ? null : _draftKey.Trim(),
+                CancellationToken.None);
+
+            _draftKey = string.Empty;
+            await RefreshAiAsync();
+            Notify(AppStatusArea.Ai, "settings-page.ai.save");
+
+            _notice = new Notice(_storeHasKey
+                ? "AI provider settings saved. The API key is stored securely in Windows Credential Manager for this Windows account."
+                : "AI provider settings saved.", NoticeKind.Success);
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to save the settings. Try again.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemoveKeyAsync()
+    {
+        if (!_storeHasKey)
+        {
+            return;
+        }
+
+        _busy = true;
+        _notice = null;
+        try
+        {
+            await Api.DeleteAiApiKeyAsync(CancellationToken.None);
+            await RefreshAiAsync();
+            Notify(AppStatusArea.Ai, "settings-page.ai.remove-key");
+            _notice = new Notice("Saved API key removed. The AI assistant is disabled until you save a new key.", NoticeKind.Success);
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to remove the key. Try again.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        _busy = true;
+        _notice = null;
+        try
+        {
+            var result = await Api.TestAiConnectionAsync(CancellationToken.None);
+            _notice = result.Status switch
+            {
+                "connected" => new Notice(
+                    result.LatencyMs is { } ms
+                        ? $"AI connection successful (probe took {ms} ms)."
+                        : "AI connection successful.",
+                    NoticeKind.Success),
+                "not_configured" => new Notice(result.Error ?? "The AI provider is not configured yet.", NoticeKind.Info),
+                _ => new Notice(result.Error ?? "The AI provider is not available.", NoticeKind.Error),
+            };
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to test the connection.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void OnDraftExchangeUrlChanged(ChangeEventArgs e)
+    {
+        _draftExchangeUrl = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDraftExchangeModeChanged(ChangeEventArgs e)
+    {
+        _draftExchangeMode = e.Value?.ToString() ?? "Windows";
+    }
+
+    private void OnDraftExchangeUsernameChanged(ChangeEventArgs e)
+    {
+        _draftExchangeUsername = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDraftExchangeDomainChanged(ChangeEventArgs e)
+    {
+        _draftExchangeDomain = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDraftExchangePasswordChanged(ChangeEventArgs e)
+    {
+        _draftExchangePassword = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private async Task RefreshExchangeAsync()
+    {
+        _exchange = await Api.GetExchangeSettingsAsync(CancellationToken.None);
+        ApplyLoadedExchangeValues();
+    }
+
+    private void ApplyLoadedExchangeValues()
+    {
+        _initialExchangeUrl = _exchange?.EwsUrl ?? string.Empty;
+        _initialExchangeMode = _exchange?.UsesDefaultCredentials == true
+            ? "Windows"
+            : string.Equals(_exchange?.AuthenticationMode, "UsernamePassword", StringComparison.OrdinalIgnoreCase)
+                ? "UsernamePassword"
+                : "Windows";
+        _initialExchangeUsername = _exchange?.Username ?? string.Empty;
+        _initialExchangeDomain = _exchange?.Domain ?? string.Empty;
+
+        _draftExchangeUrl = _initialExchangeUrl;
+        _draftExchangeMode = _initialExchangeMode;
+        _draftExchangeUsername = _initialExchangeUsername;
+        _draftExchangeDomain = _initialExchangeDomain;
+
+        // The password is write-only: it is never loaded back from the server.
+        _draftExchangePassword = string.Empty;
+    }
+
+    private async Task RefreshAiAsync()
+    {
+        _ai = await Api.GetAiSettingsAsync(CancellationToken.None);
+        ApplyLoadedAiValues();
+    }
+
+    private void ApplyLoadedAiValues()
+    {
+        _initialBaseUrl = _ai?.BaseUrl ?? string.Empty;
+        _initialModel = _ai?.Model ?? string.Empty;
+        _draftBaseUrl = _initialBaseUrl;
+        _draftModel = _initialModel;
+    }
+
+    private async Task SaveExchangeSettingsAsync()
+    {
+        if (_exchange is null || !_hasExchangeEdits)
+        {
+            return;
+        }
+
+        _busy = true;
+        _notice = null;
+        try
+        {
+            var windowsMode = _usesWindowsAuthDraft;
+            var username = _draftExchangeUsername.Trim();
+            var domain = _draftExchangeDomain.Trim();
+
+            await Api.SaveExchangeSettingsAsync(
+                _draftExchangeUrl.Trim(),
+                windowsMode ? "Windows" : "UsernamePassword",
+                windowsMode || username.Length == 0 ? null : username,
+                windowsMode || domain.Length == 0 ? null : domain,
+                string.IsNullOrWhiteSpace(_draftExchangePassword) ? null : _draftExchangePassword.Trim(),
+                CancellationToken.None);
+
+            await RefreshExchangeAsync();
+            Notify(AppStatusArea.Exchange, "settings-page.exchange.save");
+
+            _notice = new Notice(
+                windowsMode
+                    ? "Exchange settings saved for this Windows account. EmailAI will sign in with " +
+                      "the current Windows account (no password is stored)."
+                    : "Exchange settings saved for this Windows account. The password is stored " +
+                      "securely in Windows Credential Manager and is never written to a file.",
+                NoticeKind.Success);
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to save the settings. Try again.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemoveExchangeSettingsAsync()
+    {
+        if (_exchange is not { UserManaged: true })
+        {
+            return;
+        }
+
+        _busy = true;
+        _notice = null;
+        try
+        {
+            await Api.DeleteExchangeSettingsAsync(CancellationToken.None);
+            await RefreshExchangeAsync();
+            Notify(AppStatusArea.Exchange, "settings-page.exchange.remove");
+
+            _notice = new Notice(
+                "Saved Exchange settings and the stored password were removed. EmailAI uses the " +
+                "deployment's configuration again (or reports Exchange as not configured).",
+                NoticeKind.Success);
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to remove the settings. Try again.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestExchangeConnectionAsync()
+    {
+        _busy = true;
+        _notice = null;
+        try
+        {
+            var windowsMode = _usesWindowsAuthDraft;
+            var username = _draftExchangeUsername.Trim();
+            var domain = _draftExchangeDomain.Trim();
+
+            // The password is sent only for this probe; nothing is stored by a test.
+            var draft = new ExchangeSettingsUpdateRequest
+            {
+                EwsUrl = string.IsNullOrWhiteSpace(_draftExchangeUrl) ? null : _draftExchangeUrl.Trim(),
+                Authentication = windowsMode ? "Windows" : "UsernamePassword",
+                Username = windowsMode || username.Length == 0 ? null : username,
+                Domain = windowsMode || domain.Length == 0 ? null : domain,
+                Password = string.IsNullOrWhiteSpace(_draftExchangePassword) ? null : _draftExchangePassword.Trim(),
+            };
+
+            var result = await Api.TestExchangeConnectionAsync(draft, CancellationToken.None);
+            _notice = result.Status switch
+            {
+                "connected" => new Notice(
+                    result.LatencyMs is { } ms
+                        ? $"Exchange connection successful (probe took {ms} ms)."
+                        : "Exchange connection successful.",
+                    NoticeKind.Success),
+                _ => new Notice(result.Error ?? "Exchange is not reachable with these settings.", NoticeKind.Error),
+            };
+        }
+        catch (EmailApiException exception)
+        {
+            _notice = new Notice(exception.Message, NoticeKind.Error);
+        }
+        catch (HttpRequestException)
+        {
+            _notice = new Notice("Cannot reach the EmailAI service to test the connection.", NoticeKind.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void DismissNotice() => _notice = null;
+
+    /// <summary>
+    /// Tells every live circuit (header status strip, mail page) that the configuration saved
+    /// here must be re-evaluated right away. The notifier isolates its subscribers, and this
+    /// page has already refreshed its own state, so a failure here can never break a save.
+    /// </summary>
+    private void Notify(AppStatusArea area, string source)
+    {
+        try
+        {
+            StatusNotifier.NotifyChanged(area, source);
+        }
+        catch (Exception)
+        {
+            // A misbehaving subscriber must never turn a successful save into an error.
+        }
+    }
+
+    private enum NoticeKind
+    {
+        Success,
+        Info,
+        Error,
+    }
+
+    private sealed record Notice(string Text, NoticeKind Kind)
+    {
+        public string KindClass => Kind switch
+        {
+            NoticeKind.Success => "success",
+            NoticeKind.Info => "warn",
+            _ => "error",
+        };
+
+        public bool IsError => Kind == NoticeKind.Error;
+    }
+}
+

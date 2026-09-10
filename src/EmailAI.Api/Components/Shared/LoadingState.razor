@@ -1,0 +1,14 @@
+@* Minimal inline loading state used by every pane. *@
+
+<div class="loading-state" role="status">
+    <span class="spinner" aria-hidden="true"></span>
+    @if (!string.IsNullOrWhiteSpace(Text))
+    {
+        <p>@Text</p>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string? Text { get; set; }
+}
