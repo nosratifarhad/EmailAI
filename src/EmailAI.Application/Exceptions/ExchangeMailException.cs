@@ -11,6 +11,9 @@ public enum ExchangeMailErrorKind
     Authentication,
     BadRequest,
     NotFound,
+
+    /// <summary>The mailbox folder itself is missing (moved, deleted or never visible to this account).</summary>
+    FolderNotFound,
     MailboxError,
     SendFailed,
     Timeout,

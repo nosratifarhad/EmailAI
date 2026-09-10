@@ -267,6 +267,72 @@ button.health-chip:hover {
     font-weight: 600;
 }
 
+/* ---------- Folder hierarchy (custom folders under Inbox) ---------- */
+
+/* One folder and the rows nested under it. The group is a column; the folder itself is a row. */
+.folder-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.folder-node {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+/* The expand/collapse arrow. It is a control of its own: expanding a folder must never select it,
+   and selecting a folder must never expand something the user did not ask for. */
+.folder-toggle {
+    flex: 0 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #5f6368;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+}
+
+.folder-toggle:hover {
+    background: #e8ecf3;
+}
+
+/* A folder with no children keeps the label aligned with the folders that have an arrow. */
+.folder-toggle-empty {
+    cursor: default;
+}
+
+.folder-toggle-empty:hover {
+    background: transparent;
+}
+
+/* A custom folder is a child of Inbox: the indent is what communicates the hierarchy. */
+.folder-item.folder-child {
+    padding-left: 26px;
+    font-size: 13px;
+}
+
+.folder-children {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 10px 6px 30px;
+    color: #70777f;
+    font-size: 12px;
+}
+
+.folder-children-error {
+    align-items: flex-start;
+}
+
 /* ---------- Message list rows ---------- */
 
 .list-body {

@@ -3,9 +3,9 @@ using Microsoft.Exchange.WebServices.Data;
 namespace EmailAI.Infrastructure.Exchange;
 
 /// <summary>
-/// Maps the folder keys used by the REST surface to EWS well-known folders.
-/// The UI is deliberately restricted to this small, stable set; Exchange
-/// folder discovery comes in a later phase.
+/// Maps the well-known folder keys used by the REST surface to EWS well-known folders. A key that
+/// is not in this set is either a custom (user-created) folder - addressed through
+/// <see cref="CustomFolderKey"/> - or not a folder key at all.
 /// </summary>
 internal static class FolderMapping
 {
@@ -31,7 +31,15 @@ internal static class FolderMapping
         return false;
     }
 
-    /// <summary>All accepted folder keys (stable, ordered, documented).</summary>
+    /// <summary>
+    /// True when the key addresses a folder this service can open: a well-known folder, or a
+    /// well-formed custom-folder key (see <see cref="CustomFolderKey"/>). A malformed key is rejected
+    /// here, before any Exchange work.
+    /// </summary>
+    public static bool IsSupported(string folderKey)
+        => TryResolve(folderKey, out _) || CustomFolderKey.TryGetUniqueId(folderKey, out _);
+
+    /// <summary>All accepted well-known folder keys (stable, ordered, documented).</summary>
     public static IReadOnlyList<string> SupportedKeys { get; } =
         ["inbox", "sent", "drafts", "deleted", "junk", "archive"];
 }

@@ -4,7 +4,9 @@
 loading placeholder that only fills after an interaction.
 
 **Scope.** Cold start of the UI (Electron or browser), the prerender → interactive hand-off, and
-the resilience behaviour for a hiccup. Folder switching and paging are ordinary list loads.
+the resilience behaviour for a hiccup. Folder switching and paging are ordinary list loads. Custom
+folder discovery is deliberately **not** part of the first paint - it happens on the first expand of
+Inbox (see [16](16-mail-folders.md)).
 
 **Inputs.** The default folder (`inbox`), the folder page returned by
 `GET /api/folders/{folder}/messages`, the Blazor render mode, and the circuit's request URL
@@ -24,16 +26,19 @@ query is made and the interactive first render is not empty.
    circuit), not in `OnAfterRenderAsync`, so the very first HTML carries the list.
 2. The page fetched while prerendering is persisted and restored by the interactive instance:
    one Exchange query per cold start, and no flash of an empty list.
-3. No artificial delay, no forced folder switch and no reload is ever required for the Inbox to
+3. The first paint performs exactly **one** Exchange query (the Inbox message page). Nothing else -
+   in particular not the custom folder walk of [16](16-mail-folders.md) - may run while the page is
+   opening.
+4. No artificial delay, no forced folder switch and no reload is ever required for the Inbox to
    appear - the app does not depend on timing.
-4. An empty folder shows the explicit empty state (never an error, never a blank pane).
-5. A **transient** connection failure (the first EWS call of a session can be slow or refused)
+5. An empty folder shows the explicit empty state (never an error, never a blank pane).
+6. A **transient** connection failure (the first EWS call of a session can be slow or refused)
    gets exactly **one bounded retry** before the list reports the error - no delay, no credential
    change, no folder switch. A second failure reaches the user with the same message as before.
-6. Only genuinely transient failures are retried: connectivity and timeout codes (or an
+7. Only genuinely transient failures are retried: connectivity and timeout codes (or an
    unidentified 502/503/504). Authentication, configuration, not-found and mailbox errors are
    answers, not hiccups.
-7. A deep link (`/?item=<id>`) is honoured on the initial render; an unusable value is ignored.
+8. A deep link (`/?item=<id>`) is honoured on the initial render; an unusable value is ignored.
 
 **Failure modes.**
 
@@ -59,3 +64,5 @@ UI constant (25).
 already present**, queries only the inbox exactly once, shows the empty state rather than an
 error for an empty mailbox, absorbs one transient connection failure with a single retry (two
 attempts, Inbox still painted) and surfaces the real error after two failures.
+`CustomMailFolderUiTests` - the same first paint performs **no** folder walk (no children query, no
+custom folder in the HTML) and still renders the Inbox when the walk would fail.

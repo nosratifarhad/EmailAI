@@ -11,13 +11,26 @@ namespace EmailAI.Application.Exchange;
 public interface IExchangeMailService
 {
     /// <summary>
-    /// Returns one server-paged page of message headers for a well-known folder
-    /// ("inbox", "sent", "drafts", "deleted", "junk", "archive"). Bodies are not loaded.
+    /// Returns one server-paged page of message headers for a mailbox folder. The key is either a
+    /// well-known folder ("inbox", "sent", "drafts", "deleted", "junk", "archive") or a
+    /// custom-folder key returned by <see cref="GetChildFoldersAsync"/> - both address exactly one
+    /// Exchange folder. Bodies are never loaded.
     /// </summary>
     Task<MessagePage> GetMessagesAsync(
         string folderKey,
         int offset,
         int pageSize,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the folders nested directly below <paramref name="parentKey"/> (a well-known key or a
+    /// custom-folder key), so the sidebar can offer the mailbox hierarchy Exchange actually holds.
+    /// Only direct children are returned and only mail folders: a folder deeper in the tree, or a
+    /// calendar/contacts/tasks/search folder, is never reported as a child. The display name is
+    /// informational - callers address a folder through <see cref="MailFolder.Id"/>.
+    /// </summary>
+    Task<IReadOnlyList<MailFolder>> GetChildFoldersAsync(
+        string parentKey,
         CancellationToken cancellationToken);
 
     /// <summary>Loads a single full message (bodies + recipient lists + attachments metadata).</summary>

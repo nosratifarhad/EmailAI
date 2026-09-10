@@ -60,6 +60,16 @@ public sealed class EmailApiClient(HttpClient http)
             $"api/folders/{Uri.EscapeDataString(folderKey)}/messages?offset={offset}&pageSize={pageSize}",
             cancellationToken);
 
+    /// <summary>
+    /// GET /api/folders/{folderKey}/children - the folders nested directly below a folder. The UI
+    /// calls this with "inbox" the first time the user expands Inbox, so the first paint never pays
+    /// for a folder walk.
+    /// </summary>
+    public Task<IReadOnlyList<MailFolder>> GetChildFoldersAsync(string parentKey, CancellationToken cancellationToken)
+        => GetAsync<IReadOnlyList<MailFolder>>(
+            $"api/folders/{Uri.EscapeDataString(parentKey)}/children",
+            cancellationToken);
+
     /// <summary>GET /api/messages/{itemId} - full message.</summary>
     public Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken)
         => GetAsync<EmailMessage>($"api/messages/{Uri.EscapeDataString(itemId)}", cancellationToken);

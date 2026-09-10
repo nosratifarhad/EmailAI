@@ -73,6 +73,23 @@ public sealed class EwsExchangeMailService : IExchangeMailService
         Ews.EmailMessageSchema.InternetMessageId,
         Ews.EmailMessageSchema.References);
 
+    /// <summary>
+    /// One folder listing carries the id (to address the folder later), the name (to display it) and
+    /// the child count (so "has children" needs no extra query). Nothing else is loaded.
+    /// </summary>
+    private static readonly Ews.PropertySet FolderDiscoveryPropertySet = new(Ews.BasePropertySet.IdOnly,
+        Ews.FolderSchema.DisplayName,
+        Ews.FolderSchema.ChildFolderCount);
+
+    /// <summary>Folders fetched per Exchange round trip during child-folder discovery.</summary>
+    private const int FolderDiscoveryPageSize = 100;
+
+    /// <summary>Upper bound on discovered child folders (a hostile/broken mailbox cannot loop us).</summary>
+    private const int MaxDiscoveredChildFolders = 500;
+
+    /// <summary>Upper bound on discovery round trips (100 folders each).</summary>
+    private const int MaxFolderDiscoveryPages = 5;
+
     private readonly IExchangeConfigurationProvider _configuration;
     private readonly ILogger<EwsExchangeMailService> _logger;
 
@@ -111,8 +128,9 @@ public sealed class EwsExchangeMailService : IExchangeMailService
     private static ExchangeMailException InvalidFolderKey(string folderKey) =>
         new(
             ExchangeMailErrorKind.BadRequest,
-            $"Unsupported folder '{folderKey}'. Expected one of: " +
-            string.Join(", ", FolderMapping.SupportedKeys) + ".");
+            $"Unsupported folder '{folderKey}'. Expected a well-known folder key " +
+            $"({string.Join(", ", FolderMapping.SupportedKeys)}) or a custom folder key returned by " +
+            "GET /api/folders/{folderKey}/children.");
 
     /// <summary>
     /// Item ids are base64 and frequently contain '/', so HTTP clients percent-encode
@@ -140,7 +158,7 @@ public sealed class EwsExchangeMailService : IExchangeMailService
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        if (!FolderMapping.TryResolve(folderKey, out var folder))
+        if (!FolderMapping.IsSupported(folderKey))
         {
             throw InvalidFolderKey(folderKey);
         }
@@ -154,7 +172,7 @@ public sealed class EwsExchangeMailService : IExchangeMailService
 
         return RunExchangeAsync("GetMessages", async (service, ct) =>
         {
-            var results = await service.FindItems(folder, view, ct);
+            var results = await FindItemsInFolderAsync(service, folderKey, view, ct);
             var messages = results.Items
                 .OfType<Ews.EmailMessage>()
                 .Select(EwsMapper.ToSummary)
@@ -170,6 +188,140 @@ public sealed class EwsExchangeMailService : IExchangeMailService
             };
         }, cancellationToken);
     }
+
+    public Task<IReadOnlyList<MailFolder>> GetChildFoldersAsync(
+        string parentKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (!FolderMapping.IsSupported(parentKey))
+        {
+            throw InvalidFolderKey(parentKey);
+        }
+
+        return RunExchangeAsync("GetChildFolders", async (service, ct) =>
+        {
+            var children = new List<MailFolder>();
+            var offset = 0;
+
+            for (var page = 0; page < MaxFolderDiscoveryPages; page++)
+            {
+                // Traversal is explicitly SHALLOW: only the folders nested directly below the parent
+                // are children of it, so a folder from elsewhere in the mailbox can never be
+                // reported as one.
+                var view = new Ews.FolderView(FolderDiscoveryPageSize, offset)
+                {
+                    PropertySet = FolderDiscoveryPropertySet,
+                    Traversal = Ews.FolderTraversal.Shallow,
+                };
+
+                var results = await FindChildFoldersAsync(service, parentKey, view, ct);
+                CollectChildFolders(children, results, parentKey);
+
+                offset += results.Folders.Count;
+                if (children.Count >= MaxDiscoveredChildFolders
+                    || !results.MoreAvailable
+                    || results.Folders.Count == 0)
+                {
+                    break;
+                }
+            }
+
+            children.Sort(static (left, right) =>
+                string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase));
+
+            return (IReadOnlyList<MailFolder>)children;
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs FindItems against the one folder the key names. A well-known folder is used directly -
+    /// exactly one round trip, unchanged for Inbox/Sent/Drafts/... - while a custom key is bound
+    /// once first, so a folder that was deleted or moved away reports a typed not-found instead of
+    /// an empty list.
+    /// </summary>
+    private static async Task<Ews.FindItemsResults<Ews.Item>> FindItemsInFolderAsync(
+        Ews.ExchangeService service,
+        string folderKey,
+        Ews.ItemView view,
+        CancellationToken cancellationToken)
+    {
+        if (FolderMapping.TryResolve(folderKey, out var wellKnown))
+        {
+            return await service.FindItems(wellKnown, view, cancellationToken).ConfigureAwait(false);
+        }
+
+        var folderId = await ResolveCustomFolderIdAsync(service, folderKey, cancellationToken).ConfigureAwait(false);
+        return await service.FindItems(folderId, view, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs FindFolders (direct children only) against the folder the key names.</summary>
+    private static async Task<Ews.FindFoldersResults> FindChildFoldersAsync(
+        Ews.ExchangeService service,
+        string parentKey,
+        Ews.FolderView view,
+        CancellationToken cancellationToken)
+    {
+        if (FolderMapping.TryResolve(parentKey, out var wellKnown))
+        {
+            return await service.FindFolders(wellKnown, view, cancellationToken).ConfigureAwait(false);
+        }
+
+        var folderId = await ResolveCustomFolderIdAsync(service, parentKey, cancellationToken).ConfigureAwait(false);
+        return await service.FindFolders(folderId, view, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves a custom folder key to a live EWS folder id (one Bind). Binding is what proves the
+    /// folder exists for this account; the id is never guessed or constructed locally.
+    /// </summary>
+    private static async Task<Ews.FolderId> ResolveCustomFolderIdAsync(
+        Ews.ExchangeService service,
+        string folderKey,
+        CancellationToken cancellationToken)
+    {
+        if (!CustomFolderKey.TryGetUniqueId(folderKey, out var uniqueId))
+        {
+            throw InvalidFolderKey(folderKey);
+        }
+
+        var folder = await Ews.Folder.Bind(
+            service,
+            new Ews.FolderId(uniqueId),
+            new Ews.PropertySet(Ews.BasePropertySet.IdOnly),
+            cancellationToken).ConfigureAwait(false);
+
+        return folder.Id ?? new Ews.FolderId(uniqueId);
+    }
+
+    /// <summary>Keeps the mail folders of one discovery page (bounded, identity-stable).</summary>
+    private static void CollectChildFolders(
+        List<MailFolder> children,
+        Ews.FindFoldersResults results,
+        string parentKey)
+    {
+        foreach (var folder in results.Folders)
+        {
+            if (children.Count >= MaxDiscoveredChildFolders)
+            {
+                return;
+            }
+
+            var uniqueId = folder.Id?.UniqueId;
+            if (!IsMailFolder(folder) || string.IsNullOrWhiteSpace(uniqueId))
+            {
+                continue;
+            }
+
+            children.Add(EwsMapper.ToChildFolder(folder, parentKey, uniqueId));
+        }
+    }
+
+    /// <summary>
+    /// True for a plain mail folder. A calendar, contacts, tasks or search folder can never hold the
+    /// messages this application lists, so it is never offered as a child folder.
+    /// </summary>
+    private static bool IsMailFolder(Ews.Folder folder)
+        => folder is not (Ews.SearchFolder or Ews.ContactsFolder or Ews.CalendarFolder or Ews.TasksFolder);
 
     public Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken = default)
     {

@@ -35,6 +35,7 @@ internal static class EwsErrorClassifier
         ExchangeMailErrorKind.Authentication => "Exchange authentication failed.",
         ExchangeMailErrorKind.Connectivity => "Exchange connection failed; the server may be unreachable.",
         ExchangeMailErrorKind.NotFound => "The requested item could not be found.",
+        ExchangeMailErrorKind.FolderNotFound => "The requested folder could not be found.",
         ExchangeMailErrorKind.MailboxError => "Exchange returned an error while processing the mailbox.",
         ExchangeMailErrorKind.SendFailed => "The message could not be sent.",
         ExchangeMailErrorKind.Timeout => "Exchange did not respond in time.",
@@ -68,7 +69,8 @@ internal static class EwsErrorClassifier
 
     private static ExchangeMailErrorKind FromServiceError(ServiceError error) => error switch
     {
-        ServiceError.ErrorItemNotFound or ServiceError.ErrorFolderNotFound => ExchangeMailErrorKind.NotFound,
+        ServiceError.ErrorFolderNotFound => ExchangeMailErrorKind.FolderNotFound,
+        ServiceError.ErrorItemNotFound => ExchangeMailErrorKind.NotFound,
 
         ServiceError.ErrorAccessDenied
             or ServiceError.ErrorImpersonateUserDenied

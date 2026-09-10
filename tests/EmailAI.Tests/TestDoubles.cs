@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using EmailAI.Application.AI;
+using EmailAI.Application.Exceptions;
 using EmailAI.Application.Exchange;
 using EmailAI.Application.Settings;
 using EmailAI.Domain.AI;
@@ -278,9 +279,28 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
 {
     private readonly Dictionary<string, List<MessageSummary>> _folders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EmailMessage> _messages = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<MailFolder>> _childFolders = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Number of list queries served (lets tests assert on polling behaviour).</summary>
     public int ListCalls { get; private set; }
+
+    /// <summary>Number of child-folder queries served (lets tests assert on lazy discovery).</summary>
+    public int FolderListCalls { get; private set; }
+
+    /// <summary>Every parent key whose child folders were requested, in call order.</summary>
+    public List<string> RequestedFolderParents { get; } = [];
+
+    /// <summary>
+    /// When set, the NEXT list query fails with this typed Exchange error instead of answering
+    /// (used for folder-gone / access-denied / unavailable paths).
+    /// </summary>
+    public ExchangeMailErrorKind? FailNextListKind { get; set; }
+
+    /// <summary>
+    /// When set, the NEXT child-folder query fails with this typed Exchange error instead of
+    /// answering (used for "folder discovery failed" / "Exchange unavailable").
+    /// </summary>
+    public ExchangeMailErrorKind? FailNextChildFoldersKind { get; set; }
 
     /// <summary>
     /// Number of UPCOMING list queries that answer with a transient Exchange failure instead of
@@ -326,6 +346,33 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
     /// <summary>Arranges the full message returned by <see cref="GetMessageAsync"/>.</summary>
     public void ArrangeMessage(EmailMessage message) => _messages[message.Id] = message;
 
+    /// <summary>
+    /// Arranges the folders nested directly below a parent key, exactly like Exchange reports them
+    /// (direct children only, alphabetical). A parent with no arrangement has no children.
+    /// </summary>
+    public void ArrangeChildren(string parentKey, params MailFolder[] children)
+        => _childFolders[parentKey] = [.. children.OrderBy(child => child.DisplayName, StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>A custom child folder arranged for the fake mailbox.</summary>
+    public static MailFolder Child(
+        string id,
+        string displayName,
+        string parentKey = "inbox",
+        bool hasChildren = false,
+        string? wellKnownType = null)
+        => new()
+        {
+            Id = id,
+            DisplayName = displayName,
+            ParentId = parentKey,
+            HasChildren = hasChildren,
+            WellKnownType = wellKnownType ?? MailFolderTypes.Custom,
+        };
+
+    /// <summary>Custom-folder keys exactly as the REST surface hands them back.</summary>
+    public static string CustomKey(string uniqueId)
+        => EmailAI.Infrastructure.Exchange.CustomFolderKey.FromUniqueId(uniqueId);
+
     public Task<MessagePage> GetMessagesAsync(
         string folderKey,
         int offset,
@@ -334,6 +381,13 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
     {
         ListCalls++;
         RequestedFolders.Add(folderKey);
+
+        if (FailNextListKind is { } kind)
+        {
+            FailNextListKind = null;
+            throw new EmailAI.Application.Exceptions.ExchangeMailException(
+                kind, "Injected typed Exchange failure (test double).");
+        }
 
         if (FailNextListCalls > 0)
         {
@@ -358,12 +412,37 @@ internal sealed class FakeExchangeMailService : IExchangeMailService
         });
     }
 
+    public Task<IReadOnlyList<MailFolder>> GetChildFoldersAsync(
+        string parentKey,
+        CancellationToken cancellationToken)
+    {
+        FolderListCalls++;
+        RequestedFolderParents.Add(parentKey);
+
+        if (FailNextChildFoldersKind is { } kind)
+        {
+            FailNextChildFoldersKind = null;
+            throw new ExchangeMailException(kind, "Injected typed Exchange failure (test double).");
+        }
+
+        // The fake enforces the same folder-key contract as the EWS service, so a host test sees the
+        // real 400 for an unsupported key instead of a silently empty folder list.
+        if (!EmailAI.Infrastructure.Exchange.FolderMapping.IsSupported(parentKey))
+        {
+            throw new ExchangeMailException(
+                ExchangeMailErrorKind.BadRequest,
+                $"Unsupported folder '{parentKey}'.");
+        }
+
+        return Task.FromResult<IReadOnlyList<MailFolder>>(
+            _childFolders.TryGetValue(parentKey, out var children) ? children : []);
+    }
+
     public Task<EmailMessage> GetMessageAsync(string itemId, CancellationToken cancellationToken)
         => _messages.TryGetValue(itemId, out var message)
             ? Task.FromResult(message)
             : Task.FromException<EmailMessage>(
                 new InvalidOperationException($"No fake message '{itemId}' is arranged."));
-
     public Task<MessageThread> GetThreadAsync(string itemId, CancellationToken cancellationToken)
         => Task.FromResult(new MessageThread
         {

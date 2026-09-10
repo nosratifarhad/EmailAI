@@ -69,6 +69,8 @@ public sealed class ExceptionHandlingMiddleware(
                     mail.Message),
                 ExchangeMailErrorKind.NotFound => (404, "message_not_found",
                     "The requested message could not be found."),
+                ExchangeMailErrorKind.FolderNotFound => (404, "folder_not_found",
+                    "The requested folder could not be found or is no longer available."),
                 ExchangeMailErrorKind.SendFailed => (502, "message_send_failed",
                     "The message could not be sent. Nothing was sent."),
                 ExchangeMailErrorKind.MailboxError => (502, "exchange_mailbox_error",

@@ -24,6 +24,7 @@ other.
 | Identity and trust | [Current-user identity](#current-user-identity-the-mailbox-owner) · [Prompt trust boundaries](#prompt-trust-boundaries) |
 | Rendering and notifications | [HTML sanitization](#html-sanitization) · [Notifications](#notifications) |
 | UI behaviour | [UI behaviour](#ui-behaviour-settings-and-mail) · [App status refresh](#app-status-refresh) · [Initial inbox loading](#initial-inbox-loading) |
+| Mailbox folders | [Mailbox folders and custom folder navigation](#mailbox-folders-and-custom-folder-navigation) |
 | Failures | [Error handling](#error-handling) |
 | Verification and shipping | [Testing strategy](#testing-strategy) · [Release and package model](#release-and-package-model) · [Known limitations](#known-limitations) |
 | Change flow | [Branch protection and PR CI](#branch-protection-and-pr-ci) |
@@ -116,13 +117,14 @@ and - only for an AI action the user triggered - one HTTPS call to the configure
 
 ```text
 UI (Blazor) -> EmailApiClient -> GET /api/folders/{folder}/messages | /api/messages/{id} |
-                                 /api/messages/{id}/thread | POST /api/messages/{id}/reply
+                                 /api/messages/{id}/thread | POST /api/messages/{id}/reply |
+                                 GET /api/folders/{folder}/children (custom folders, on first expand only)
   -> IExchangeMailService (EwsExchangeMailService)
        -> ExchangeConfigurationProvider : the effective endpoint/mode/account
                                          (per-user as a whole, else deployment configuration)
        -> ExchangeServiceFactory        : one ExchangeService per operation, in exactly the
                                          configured mode (Windows | UsernamePassword)
-       -> EWS (FindItems / GetItem / SendAndSaveCopy / ResolveNames / ...)
+       -> EWS (FindItems / FindFolders / GetItem / SendAndSaveCopy / ResolveNames / ...)
        -> EwsErrorClassifier            : typed failure (authentication / connectivity / timeout /
                                          mailbox / not-configured / invalid configuration)
   -> JSON DTOs to the UI (never a credential, never a raw EWS fault)
@@ -543,6 +545,44 @@ shell. A **transient connection failure** on that very first EWS call - which a 
 - is retried exactly **once** (no delay, no credential change, no configuration change); a second
 failure is surfaced to the user unchanged, with a retry action.
 
+## Mailbox folders and custom folder navigation
+
+The sidebar shows the mailbox hierarchy the account really holds: the fixed well-known folders
+(`inbox`, `sent`, `drafts`, `deleted`, `junk`, `archive`) as the top level, and the user's custom
+folders nested under **Inbox** - the Outlook habit - read from Exchange, never invented.
+
+```text
+expand Inbox -> GET /api/folders/inbox/children
+                   -> FindFolders(Inbox, shallow)   one listing per page (100 per page, at most
+                                                     5 pages, at most 500 folders)
+                   -> mail folders only (no search/contacts/calendar/tasks folders)
+                   -> MailFolder { id, displayName, parentId, wellKnownType, hasChildren }
+click a folder -> GET /api/folders/{folderKey}/messages  (the existing paged message list)
+```
+
+* **Identity is the Exchange folder id, never the name.** A custom folder key is
+  `folder:<hex of the folder id>`: URL-safe, opaque, stable across a rename, and uppercase-only so the
+  case-insensitive folder-keyed caches (the new-mail feed) can never merge two folders. Two folders
+  with the same name stay two different rows.
+* **Discovery is lazy and cached.** The first paint makes exactly one Exchange call (the Inbox page,
+  see [Initial inbox loading](#initial-inbox-loading)); the folder walk runs the first time Inbox is
+  expanded and the result is remembered for the life of the circuit. Re-expanding, collapsing and
+  switching folders never repeat it.
+* **The arrow and the label are separate controls.** Expanding/collapsing never changes the selection;
+  selecting a custom folder keeps its parent open, so the selected row stays visible. The arrow is
+  offered while discovery is unknown and disappears when a successful empty answer proves there is
+  nothing below.
+* **A custom folder is just another source for the existing message list** - same paging, sorting,
+  selection, empty state, refresh, notifications and error handling; a superseded response is
+  discarded, so stale messages never appear.
+* **Failures are contained and typed.** A failed folder walk shows its message in the pane with a
+  retry while every top-level folder keeps working; a selected folder that no longer exists answers
+  `404 folder_not_found`; an unknown/malformed key answers `400 bad_request` before any Exchange call.
+  An Exchange settings change resets the discovered folders and returns the selection to Inbox.
+* No secret is involved: the key is an opaque Exchange folder id, and the feature adds no credential
+  read, no account-returning endpoint and no authentication-fallback change. Details: specification
+  [16](spec/16-mail-folders.md).
+
 ## Error handling
 
 Every failure is typed before it is rendered:
@@ -650,6 +690,14 @@ contributor-facing statement of the same policy.
 * **One mailbox per Windows user** - a second mailbox means a second Windows account.
 * **Installer publishing is a manual step in this working copy** - there is no Git remote here, so the
   release-asset upload is documented rather than automated (see 15).
+* **Mail folders are read, not managed** - the application lists and reads the mailbox hierarchy
+  (including custom folders under Inbox); it never creates, renames, moves or deletes a folder, and it
+  discovers one level below Inbox. A custom folder's row is read by sender, like Inbox (the well-known
+  Sent/Drafts recipient view is only known for the well-known folders).
+* **The folder walk is not simulated offline** - the interactive click behaviour is verified through
+  the sidebar state object, the prerendered markup and the REST contract (16); a browser-level Blazor
+  component harness is deliberately not referenced, so the real end-to-end click path is a manual
+  check against a live mailbox.
 
 ## Key implementation files
 
@@ -664,8 +712,9 @@ contributor-facing statement of the same policy.
 | Mail HTML + new-mail feed | `src/EmailAI.Application/Mail/MailHtmlSanitizer.cs`, `src/EmailAI.Application/Notifications/*`, `src/EmailAI.Api/Endpoints/NotificationEndpoints.cs`, `tests/EmailAI.Tests/MailHtmlSanitizerTests.cs`, `MailNotificationServiceTests.cs`, `NotificationEndpointsTests.cs` |
 | Live status refresh (UI) | `src/EmailAI.Api/Web/AppStatusNotifier.cs`, `tests/EmailAI.Tests/AppStatusNotifierTests.cs` |
 | Initial Inbox load + list resilience (UI) | `src/EmailAI.Api/Components/Pages/MailClient.razor` (initialization-pipeline load, `PersistentComponentState`, one bounded retry for a transient connection failure), `tests/EmailAI.Tests/InitialInboxLoadTests.cs` |
+| Mailbox folders (hierarchy + custom folders) | `src/EmailAI.Domain/Mail/MailFolder.cs`, `src/EmailAI.Infrastructure/Exchange/CustomFolderKey.cs`, `EwsExchangeMailService.cs` (`GetChildFoldersAsync`), `EwsMapper.cs` (`ToChildFolder`), `src/EmailAI.Api/Web/FolderCatalog.cs`, `MailFolderSidebar.cs`, `src/EmailAI.Api/Components/Pages/MailClient.razor`, `tests/EmailAI.Tests/CustomFolderKeyTests.cs`, `MailFolderEndpointsTests.cs`, `MailFolderSidebarTests.cs`, `CustomMailFolderUiTests.cs` |
 | Desktop shell + release packaging | `desktop/main.js`, `desktop/scripts/release.js`, `desktop/scripts/verify-secrets.js`, `desktop/package.json`, `.github/workflows/release.yml` |
-| Specifications and release docs | `.ai/spec/README.md` + `01`-`15`, `.ai/service-context.md` (this file), `README.md`, `RELEASE-NOTES.md` |
+| Specifications and release docs | `.ai/spec/README.md` + `01`-`16`, `.ai/service-context.md` (this file), `README.md`, `RELEASE-NOTES.md` |
 | Exchange options + validation | `src/EmailAI.Domain/Exchange/ExchangeOptions.cs`, `src/EmailAI.Api/Configuration/ExchangeConfiguration.cs` |
 | Exchange auth runner/factory | `src/EmailAI.Infrastructure/Exchange/ExchangeAuthRunner.cs`, `ExchangeServiceFactory.cs` |
 | Exchange service + classifier | `src/EmailAI.Infrastructure/Exchange/EwsExchangeMailService.cs`, `EwsErrorClassifier.cs`, `EwsExchangeConnectionTester.cs` |
