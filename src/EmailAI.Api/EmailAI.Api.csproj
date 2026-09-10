@@ -11,4 +11,15 @@
     <ProjectReference Include="..\EmailAI.Infrastructure\EmailAI.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <!--
+      appsettings.Development.json is developer-only (verbose Microsoft.* logging). A Release
+      build must never publish or package it: the desktop app ships as Production, and shipping
+      development configuration inside the installer is a release defect even when the values are
+      harmless. The Release publish is verified by desktop/scripts/release.js and pinned by
+      tests/EmailAI.Tests/ReleasePackagingTests.cs.
+    -->
+    <Content Remove="appsettings.Development.json" />
+  </ItemGroup>
+
 </Project>

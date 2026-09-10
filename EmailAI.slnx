@@ -10,5 +10,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/EwsApiProbe/EwsApiProbe.csproj" />
+    <Project Path="tools/EwsAuthProbe/EwsAuthProbe.csproj" />
   </Folder>
 </Solution>

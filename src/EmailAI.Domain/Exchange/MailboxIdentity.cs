@@ -14,8 +14,8 @@ namespace EmailAI.Domain.Exchange;
 /// No secret is ever part of this record (no password, no token) - only the display name,
 /// the SMTP address and the account name, which the Settings page already shows.
 /// </summary>
-/// <param name="DisplayName">Directory display name, e.g. <c>Farhad Nosrati</c>.</param>
-/// <param name="SmtpAddress">Primary SMTP address, e.g. <c>farhad@contoso.com</c>.</param>
+/// <param name="DisplayName">Directory display name, e.g. <c>Alex Doe</c>.</param>
+/// <param name="SmtpAddress">Primary SMTP address, e.g. <c>alex@contoso.com</c>.</param>
 /// <param name="AccountName">Account used to reach Exchange (SMTP/UPN/<c>DOMAIN\user</c>).</param>
 /// <param name="Source">Where the identity came from (see the <c>*Source</c> constants).</param>
 public sealed record MailboxIdentity(
@@ -94,7 +94,7 @@ public sealed record MailboxIdentity(
 
 /// <summary>
 /// Builds the alias list for the current user from authoritative identity values only.
-/// The AI gets these as CONTEXT for reasoning (so "ask Farhad" can be understood as
+/// The AI gets these as CONTEXT for reasoning (so "ask Alex" can be understood as
 /// "the current user"); they are deliberately not used for mechanical string matching.
 /// </summary>
 public static class MailboxAliases

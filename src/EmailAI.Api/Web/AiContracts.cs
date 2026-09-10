@@ -1,14 +1,29 @@
+using System.Text.Json;
 using EmailAI.Application.AI;
 
 namespace EmailAI.Api.Web;
 
 /// <summary>
-/// Options body for AI operations. Language defaults to Auto (follow the source
-/// email language); English/Persian override the output language explicitly.
+/// Options body for AI operations. The output language is optional and defaults to Auto (follow
+/// the source email language); English/Persian force it explicitly.
+///
+/// On the wire the language is its NAME - <c>{"language":"English"}</c> - which is the
+/// documented contract and what the Blazor UI sends. A numeric value
+/// (<c>{"language":1}</c>) is still accepted for compatibility with earlier clients. The token is
+/// kept as a <see cref="JsonElement"/> and resolved by <see cref="AiLanguageRequest"/>, so an
+/// unsupported value answers with a descriptive 400 instead of the framework's empty one.
 /// </summary>
 public sealed class AiOperationRequest
 {
-    public AiLanguage Language { get; init; } = AiLanguage.Auto;
+    /// <summary>
+    /// Requested output language: <c>"Auto"</c>, <c>"English"</c> or <c>"Persian"</c>
+    /// (case-insensitive), or its numeric value (0/1/2). Omitted means Auto.
+    /// </summary>
+    public JsonElement? Language { get; init; }
+
+    /// <summary>Creates an options body for one explicit language (wire form: the language name).</summary>
+    public static AiOperationRequest For(AiLanguage language)
+        => new() { Language = JsonSerializer.SerializeToElement(language.ToString()) };
 }
 
 /// <summary>Response body of every AI operation: the produced text, nothing else.</summary>

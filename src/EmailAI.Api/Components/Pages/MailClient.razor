@@ -467,6 +467,14 @@
     private AppStatusNotifier StatusNotifier { get; set; } = default!;
 
     private const int PageSize = 25;
+
+    /// <summary>
+    /// How many extra attempts a transient connection failure gets before the list reports it.
+    /// One is enough to absorb the cold-start hiccup of the first EWS query without hiding a
+    /// genuinely unreachable server.
+    /// </summary>
+    private const int MaxTransientListRetries = 1;
+
     private const string NetworkMessage = "Cannot reach the EmailAI service. Check your network connection and try again.";
     private const string GenericMessage = "Something unexpected went wrong. Please try again.";
 
@@ -769,56 +777,98 @@
         await LoadMessagesAsync();
     }
 
+    /// <summary>
+    /// Loads one page of the selected folder.
+    ///
+    /// A TRANSIENT connection failure gets exactly one extra attempt before the list reports an
+    /// error. The very first query of a session has to establish the EWS connection (and a
+    /// corporate Exchange can be slow or refuse that first call), so failing the very first paint
+    /// over a single hiccup would be wrong. The retry is bounded, contains no delay, changes no
+    /// folder/credentials and never hides a real failure - a second failure reaches the user with
+    /// the same message as before. Authentication, configuration, not-found and mailbox errors are
+    /// never retried: those are answers, not hiccups.
+    /// </summary>
     private async Task LoadMessagesAsync()
     {
         var version = ++_listVersion;
-        _messagesLoading = true;
         _listError = null;
 
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            var page = await Api.GetFolderMessagesAsync(_folder.Key, _offset, PageSize, CancellationToken.None);
-            if (version != _listVersion)
+            _messagesLoading = true;
+
+            try
             {
+                var page = await Api.GetFolderMessagesAsync(_folder.Key, _offset, PageSize, CancellationToken.None);
+                if (version != _listVersion)
+                {
+                    return;
+                }
+
+                ApplyPage(page);
                 return;
             }
-
-            ApplyPage(page);
-        }
-        catch (EmailApiException ex) when (version == _listVersion)
-        {
-            SetListFailure(ex.Message);
-        }
-        catch (HttpRequestException) when (version == _listVersion)
-        {
-            SetListFailure(NetworkMessage);
-        }
-        catch (OperationCanceledException) when (version == _listVersion && !_disposed)
-        {
-            // A cancelled load must never masquerade as "this folder is empty": report it so
-            // the user can retry instead of believing there is no mail.
-            SetListFailure(NetworkMessage);
-        }
-        catch (OperationCanceledException)
-        {
-            // The component is going away, or a newer load superseded this one - ignore.
-        }
-        catch (Exception) when (version != _listVersion)
-        {
-            // A stale response finished after a newer load started - ignore it.
-        }
-        catch (Exception)
-        {
-            SetListFailure(GenericMessage);
-        }
-        finally
-        {
-            if (version == _listVersion)
+            catch (EmailApiException ex) when (version == _listVersion)
             {
-                _messagesLoading = false;
+                if (attempt < MaxTransientListRetries && IsTransientConnectionFailure(ex))
+                {
+                    continue;
+                }
+
+                SetListFailure(ex.Message);
             }
+            catch (HttpRequestException) when (version == _listVersion)
+            {
+                if (attempt < MaxTransientListRetries)
+                {
+                    continue;
+                }
+
+                SetListFailure(NetworkMessage);
+            }
+            catch (OperationCanceledException) when (version == _listVersion && !_disposed)
+            {
+                // A cancelled load must never masquerade as "this folder is empty": report it so
+                // the user can retry instead of believing there is no mail.
+                SetListFailure(NetworkMessage);
+            }
+            catch (OperationCanceledException)
+            {
+                // The component is going away, or a newer load superseded this one - ignore.
+            }
+            catch (Exception) when (version != _listVersion)
+            {
+                // A stale response finished after a newer load started - ignore it.
+            }
+            catch (Exception)
+            {
+                SetListFailure(GenericMessage);
+            }
+            finally
+            {
+                if (version == _listVersion)
+                {
+                    _messagesLoading = false;
+                }
+            }
+
+            return;
         }
     }
+
+    /// <summary>
+    /// True for the failure kinds one more identical attempt can plausibly fix: the Exchange
+    /// endpoint could not be reached or timed out for that call, or the backend itself could not
+    /// answer (gateway/transient server error). Everything else - authentication, configuration,
+    /// a missing message, an Exchange mailbox error - is a real answer and is reported as-is.
+    /// </summary>
+    private static bool IsTransientConnectionFailure(EmailApiException exception)
+        => exception.ErrorCode switch
+        {
+            "exchange_connection_failed" or "exchange_timeout" => true,
+            null or "" => exception.StatusCode is 502 or 503 or 504,
+            _ => false,
+        };
 
     /// <summary>Clears the list and shows why it could not be loaded.</summary>
     private void SetListFailure(string message)
@@ -1108,7 +1158,10 @@
         _aiContent = null;
         _aiInserted = false;
 
-        var request = new AiOperationRequest { Language = _aiLanguage };
+        // The selected response language travels as its name ("Auto"/"English"/"Persian"), so
+        // the request is readable and matches the documented API contract. The direction
+        // (RTL/LTR) is derived from the selected language on the client, never from the mail.
+        var request = AiOperationRequest.For(_aiLanguage);
 
         try
         {

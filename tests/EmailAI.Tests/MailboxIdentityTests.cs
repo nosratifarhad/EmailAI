@@ -13,13 +13,13 @@ public class MailboxIdentityTests
     public void Create_TrimsValues_AndTurnsBlankIntoNull()
     {
         var identity = MailboxIdentity.Create(
-            "  Farhad Nosrati  ",
-            " farhad@contoso.com ",
+            "  Alex Doe  ",
+            " alex@contoso.com ",
             "   ",
             MailboxIdentity.ExchangeDirectorySource);
 
-        Assert.Equal("Farhad Nosrati", identity.DisplayName);
-        Assert.Equal("farhad@contoso.com", identity.SmtpAddress);
+        Assert.Equal("Alex Doe", identity.DisplayName);
+        Assert.Equal("alex@contoso.com", identity.SmtpAddress);
         Assert.Null(identity.AccountName);
         Assert.Equal(MailboxIdentity.ExchangeDirectorySource, identity.Source);
         Assert.True(identity.IsKnown);
@@ -29,12 +29,12 @@ public class MailboxIdentityTests
     public void Create_UnwrapsADisplayNameThatArrivesAsNamePlusAddress()
     {
         var identity = MailboxIdentity.Create(
-            "Farhad Nosrati <farhad@contoso.com>",
+            "Alex Doe <alex@contoso.com>",
             null,
             null,
             MailboxIdentity.WindowsIdentitySource);
 
-        Assert.Equal("Farhad Nosrati", identity.DisplayName);
+        Assert.Equal("Alex Doe", identity.DisplayName);
     }
 
     [Fact]
@@ -57,21 +57,21 @@ public class MailboxIdentityTests
     public void Aliases_StartWithTheDisplayName_AndCoverNameAccountAndSmtpLocalPart()
     {
         var identity = MailboxIdentity.Create(
-            "Farhad Nosrati",
-            "farhad@contoso.com",
-            "CONTOSO\\farhad",
+            "Alex Doe",
+            "alex@contoso.com",
+            "CONTOSO\\alex",
             MailboxIdentity.ExchangeDirectorySource);
 
         var aliases = identity.Aliases;
 
-        Assert.Equal("Farhad Nosrati", aliases[0]);
-        Assert.Contains("farhad@contoso.com", aliases);
-        Assert.Contains("Farhad", aliases);
-        Assert.Contains("Nosrati", aliases);
-        Assert.Contains("CONTOSO\\farhad", aliases);
-        // Deduplication is case-insensitive, so the account's user part ("farhad") is already
-        // covered by the display-name part "Farhad" instead of being repeated.
-        Assert.Single(aliases, alias => string.Equals(alias, "farhad", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Alex Doe", aliases[0]);
+        Assert.Contains("alex@contoso.com", aliases);
+        Assert.Contains("Alex", aliases);
+        Assert.Contains("Doe", aliases);
+        Assert.Contains("CONTOSO\\alex", aliases);
+        // Deduplication is case-insensitive, so the account's user part ("alex") is already
+        // covered by the display-name part "Alex" instead of being repeated.
+        Assert.Single(aliases, alias => string.Equals(alias, "alex", StringComparison.OrdinalIgnoreCase));
         Assert.True(aliases.Count <= MailboxAliases.MaxAliases);
     }
 
@@ -104,15 +104,15 @@ public class MailboxIdentityTests
     public void Describe_NamesTheIdentityAndItsSource_WithoutAnySecret()
     {
         var identity = MailboxIdentity.Create(
-            "Farhad Nosrati",
-            "farhad@contoso.com",
-            "farhad",
+            "Alex Doe",
+            "alex@contoso.com",
+            "alex",
             MailboxIdentity.ExchangeDirectorySource);
 
         var description = identity.Describe();
 
-        Assert.Contains("Farhad Nosrati", description, StringComparison.Ordinal);
-        Assert.Contains("farhad@contoso.com", description, StringComparison.Ordinal);
+        Assert.Contains("Alex Doe", description, StringComparison.Ordinal);
+        Assert.Contains("alex@contoso.com", description, StringComparison.Ordinal);
         Assert.Contains(MailboxIdentity.ExchangeDirectorySource, description, StringComparison.Ordinal);
     }
 }

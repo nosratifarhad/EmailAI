@@ -69,9 +69,9 @@ public class AiServiceTests
     /// operation, so the model knows who it is helping.
     /// </summary>
     private static MailboxIdentity CurrentUser { get; } = MailboxIdentity.Create(
-        "Farhad Nosrati",
-        "farhad@contoso.com",
-        "farhad",
+        "Alex Doe",
+        "alex@contoso.com",
+        "alex",
         MailboxIdentity.ExchangeDirectorySource);
 
     [Fact]
@@ -84,7 +84,7 @@ public class AiServiceTests
 
         var system = Assert.Single(stub.Requests).Messages[0].Content;
         Assert.Contains("CURRENT USER", system, StringComparison.Ordinal);
-        Assert.Contains("farhad@contoso.com", system, StringComparison.Ordinal);
+        Assert.Contains("alex@contoso.com", system, StringComparison.Ordinal);
     }
 
     [Fact]
