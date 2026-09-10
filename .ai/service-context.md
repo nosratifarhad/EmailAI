@@ -26,6 +26,7 @@ other.
 | UI behaviour | [UI behaviour](#ui-behaviour-settings-and-mail) · [App status refresh](#app-status-refresh) · [Initial inbox loading](#initial-inbox-loading) |
 | Failures | [Error handling](#error-handling) |
 | Verification and shipping | [Testing strategy](#testing-strategy) · [Release and package model](#release-and-package-model) · [Known limitations](#known-limitations) |
+| Change flow | [Branch protection and PR CI](#branch-protection-and-pr-ci) |
 
 ## System purpose
 
@@ -596,6 +597,39 @@ source tree
 `desktop/aspnet-publish/` are build output and are git-ignored - binaries are release assets, never
 committed. `.github/workflows/release.yml` runs the same pipeline for a `v*.*.*` tag (plus a
 source-tree scan) and attaches the installer and its checksum to the GitHub Release.
+
+## Branch protection and PR CI
+
+`main` is the only protected branch. Two repository rulesets target `refs/heads/main` (and nothing
+else) with **no bypass actors**, so the policy binds the maintainer exactly as it binds a contributor:
+the ruleset `main - integrity` blocks deletion and force pushes, and the ruleset
+`main - pull request workflow` requires every change to arrive through a pull request, with the
+strict status check `Verify pull request` and a squash merge. Required approvals are **0** because a
+single maintainer account cannot approve its own pull request (GitHub rejects a self-approval, which
+would otherwise freeze `main`); raise it to `1` when a second maintainer exists.
+
+```text
+contributor fork / maintainer branch
+  -> pull request against main
+  -> .github/workflows/ci.yml  (windows-latest, job "Verify pull request")
+       npm ci
+       -> node --check main.js | scripts/release.js | scripts/verify-secrets.js
+       -> node scripts/verify-secrets.js --allow-development-config ../src ../.env.example
+       -> dotnet restore EmailAI.slnx
+       -> dotnet build EmailAI.slnx -c Release
+       -> dotnet test EmailAI.slnx -c Release
+  -> ruleset "main - pull request workflow": check green + branch up to date -> squash merge
+  -> ruleset "main - integrity": no direct push, no force push, no deletion of main
+  -> tag v*.*.* (maintainer)
+  -> .github/workflows/release.yml: installer, scan, checksum, release assets
+```
+
+A pull request **never packages anything**: the NSIS toolchain, the installer, its checksum and the
+release assets stay in `.github/workflows/release.yml`, which runs only for a `v*.*.*` tag or a
+manual dispatch. `tests/EmailAI.Tests/RepositoryWorkflowTests.cs` pins this contract (trigger shape,
+the ordered gates, the absence of packaging, the check name in the documentation, squash-only and
+tag-only releases, and the secret gate in both pipelines); `CONTRIBUTING.md` is the
+contributor-facing statement of the same policy.
 
 ## Known limitations
 
