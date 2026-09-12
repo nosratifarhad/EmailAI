@@ -116,7 +116,7 @@ checks that *before* it builds anything:
 
 ```powershell
 cd desktop
-node scripts/verify-release.js --tag v1.3.1   # PASS, or the release stops with expected/actual/sources
+node scripts/verify-release.js --tag v1.3.2   # PASS, or the release stops with expected/actual/sources
 ```
 
 A tag that disagrees with the package is a release configuration error: the pipeline never edits the
