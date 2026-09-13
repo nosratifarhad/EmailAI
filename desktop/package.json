@@ -1,7 +1,7 @@
 {
   "name": "emailai-desktop",
   "productName": "EmailAI",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Windows desktop shell for the EmailAI ASP.NET Core + Blazor application. Electron starts the bundled self-contained EmailAI.Api backend locally and loads its UI.",
   "author": "EmailAI",
   "license": "UNLICENSED",
