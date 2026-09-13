@@ -201,19 +201,22 @@ public static class AiEndpoints
         // Exchange mailbox, never guessed from the email content.
         var currentUser = await identity.GetCurrentUserAsync(cancellationToken);
 
-        // Optional context: earlier messages of the same conversation, oldest first.
+        // Thread context must include messages both before and after the target, so
+        // the model can see the latest conversation state even when the UI focus is
+        // not the newest message.
+        //
         // A failed context load must not block the operation - the target alone is
         // enough to draft a reply, so thread errors degrade to an empty history.
         IReadOnlyList<EmailMessage> history = [];
         try
         {
             var thread = await mail.GetThreadAsync(itemId, cancellationToken);
-            history = await LoadHistoryBeforeAsync(mail, thread, itemId, cancellationToken, logger);
+            history = await LoadThreadContextAsync(mail, thread, itemId, cancellationToken, logger);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
-                "AI reply context could not be loaded for message {ItemId}; continuing with the target message only. reason={Reason}",
+                "Failed to load reply thread context for {ItemId}. AI reply draft will degrade to the target only.",
                 new object?[] { itemId, exception.GetType().Name });
         }
 
@@ -285,6 +288,125 @@ public static class AiEndpoints
             }
         }
 
+        return loaded;
+    }
+
+    /// <summary>
+    /// Loads a thread-context window for reply operations.
+    ///
+    /// Unlike <see cref="LoadHistoryBeforeAsync"/>, this includes messages both before and
+    /// after the reply target inside the same chronological thread, so the model can
+    /// understand the latest conversation state even when the UI focus is not the newest
+    /// message.
+    ///
+    /// The reply target is included exactly once.
+    /// </summary>
+    private static async Task<IReadOnlyList<EmailMessage>> LoadThreadContextAsync(
+        IExchangeMailService mail,
+        MessageThread thread,
+        string targetItemId,
+        CancellationToken cancellationToken,
+        ILogger logger)
+    {
+        // Deterministic strategy:
+        // 1) always include target
+        // 2) include latest messages first (end of chronological list)
+        // 3) then include current-user messages (if available via metadata in EmailMessage)
+        // 4) then fill remaining capacity from newest to oldest
+        // Finally, return in chronological order.
+        //
+        // Note: we rely on the already-ordered thread.Messages (oldest -> newest).
+
+        if (thread.Messages.Count == 0)
+        {
+            return Array.Empty<EmailMessage>();
+        }
+
+        // Compute a bounded set of ThreadMessage ids to load (target + latest + user + fill).
+        // This avoids duplicate loading of the target.
+        var max = Math.Max(1, AiLimits.MaxThreadMessages);
+
+        var targetIndex = -1;
+        for (var i = 0; i < thread.Messages.Count; i++)
+        {
+            if (string.Equals(thread.Messages[i].Id, targetItemId, StringComparison.Ordinal))
+            {
+                targetIndex = i;
+                break;
+            }
+        }
+
+        // Always load the target if present.
+        var includedIndices = new HashSet<int>();
+        if (targetIndex >= 0)
+        {
+            includedIndices.Add(targetIndex);
+        }
+
+        // Helper: add indices from a list of candidate indices in order, until budget filled.
+        static void AddUntil(HashSet<int> set, IReadOnlyList<int> candidates, int budget)
+        {
+            for (var i = 0; i < candidates.Count && set.Count < budget; i++)
+            {
+                set.Add(candidates[i]);
+            }
+        }
+
+        // Latest state: add from the end, newest -> older.
+        var latestCandidates = new List<int>(thread.Messages.Count);
+        for (var i = thread.Messages.Count - 1; i >= 0; i--)
+        {
+            if (!includedIndices.Contains(i))
+            {
+                latestCandidates.Add(i);
+            }
+        }
+        AddUntil(includedIndices, latestCandidates, max);
+
+        // If target wasn't present in the thread listing, include nothing else beyond latest window.
+        // (This keeps the method robust to Exchange inconsistencies.)
+        // Current-user prioritization: we can only do this based on what the message metadata exposes
+        // in EmailMessage (e.g., From address). We avoid assuming SMTP formatting here.
+        if (includedIndices.Count < max)
+        {
+            // Determine current-user sender match from MailboxIdentity is not available at this layer.
+            // So we skip user-message prioritization here and rely on latest+fill.
+            // (Current-user personalization is still done via trusted identity in the prompt.)
+        }
+
+        // Fill remaining capacity from newest -> oldest (chronological fill by recency).
+        if (includedIndices.Count < max)
+        {
+            var fillCandidates = new List<int>();
+            for (var i = thread.Messages.Count - 1; i >= 0; i--)
+            {
+                if (!includedIndices.Contains(i))
+                {
+                    fillCandidates.Add(i);
+                }
+            }
+            AddUntil(includedIndices, fillCandidates, max);
+        }
+
+        // Load selected messages, avoiding duplicates.
+        // Return chronological order: oldest -> newest.
+        var selected = includedIndices
+            .OrderBy(i => i)
+            .Select(i => thread.Messages[i])
+            .ToList();
+
+        var loaded = new List<EmailMessage>(selected.Count);
+        foreach (var threadItem in selected)
+        {
+            var message = await TryLoadMessageAsync(mail, threadItem, cancellationToken, logger);
+            if (message is not null)
+            {
+                loaded.Add(message);
+            }
+        }
+
+        // If target existed but couldn't be loaded due to errors, we still return what we have.
+        // The AI layer can still generate a best-effort reply.
         return loaded;
     }
 
