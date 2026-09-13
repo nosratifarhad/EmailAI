@@ -17,7 +17,7 @@ gateway in the middle.
 **Normal users do not need to build EmailAI from source.** No .NET SDK, no Node.js, no clone.
 
 1. Open the **Releases** page of this repository and download the latest
-   `EmailAI-Setup-<version>.exe` (for example `EmailAI-Setup-1.3.2.exe`) - optionally with its
+   `EmailAI-Setup-<version>.exe` (for example `EmailAI-Setup-1.3.3.exe`) - optionally with its
    `.sha256` checksum file next to it.
 2. Run the installer (per-user install, **no administrator rights required**). Windows
    SmartScreen may warn because the build is not code-signed: *More info → Run anyway*.
@@ -1030,7 +1030,7 @@ Exchange/AI endpoint.
 and printed in the release summary). To verify a download:
 
 ```powershell
-Get-FileHash .\EmailAI-Setup-1.3.2.exe -Algorithm SHA256   # compare with the published .sha256 file
+Get-FileHash .\\EmailAI-Setup-1.3.3.exe -Algorithm SHA256   # compare with the published .sha256 file
 ```
 
 **Publishing.** `.github/workflows/release.yml` runs for a `v*.*.*` tag (or a manual dispatch that
@@ -1116,7 +1116,7 @@ specification set ([`.ai/spec/`](.ai/spec/README.md)); the integration-level sum
 | Does it ever send a reply by itself? | No. AI produces text only; a reply leaves the application when **you** press **Send reply** |
 | Does it mark mail as read, or move/delete/compose? | Not in this version: it is a read + reply slice ([Current limitations](#current-limitations)) |
 | Can I uninstall cleanly? | Yes - *Settings → Apps → EmailAI → Uninstall*. Then delete `%APPDATA%\EmailAI` and the two Credential Manager entries if you also want to remove your configuration |
-| How do I know the download is intact? | Compare it with the published `EmailAI-Setup-<version>.exe.sha256`: `Get-FileHash .\EmailAI-Setup-1.3.2.exe -Algorithm SHA256` |
+| How do I know the download is intact? | Compare it with the published `EmailAI-Setup-<version>.exe.sha256`: `Get-FileHash .\\EmailAI-Setup-1.3.3.exe -Algorithm SHA256` |
 
 ## Current limitations
 
